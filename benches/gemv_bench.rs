@@ -1,0 +1,74 @@
+use criterion::{criterion_group, criterion_main, Criterion, BenchmarkId};
+use half::f16;
+use ternary_zero_core::{BitLinear, pack_ternary_to_u32, ternary_quantize_ste};
+
+fn bench_pack_ternary(c: &mut Criterion) {
+    let mut group = c.benchmark_group("pack_ternary");
+
+    for n in [1024, 2048, 4096, 8192] {
+        let weights: Vec<i8> = (0..n)
+            .map(|i| match i % 3 {
+                0 => 1i8,
+                1 => -1i8,
+                _ => 0i8,
+            })
+            .collect();
+
+        group.bench_with_input(BenchmarkId::new("pack", n), &weights, |b, w| {
+            b.iter(|| pack_ternary_to_u32(w, n));
+        });
+    }
+    group.finish();
+}
+
+fn bench_ternary_quantize(c: &mut Criterion) {
+    let mut group = c.benchmark_group("ternary_quantize");
+
+    for n in [1024, 2048, 4096, 8192] {
+        let weights: Vec<f16> = (0..n)
+            .map(|i| f16::from_f32((i as f32 * 0.001).sin()))
+            .collect();
+
+        group.bench_with_input(BenchmarkId::new("quantize", n), &weights, |b, w| {
+            b.iter(|| ternary_quantize_ste(w, 0.5));
+        });
+    }
+    group.finish();
+}
+
+fn bench_cpu_reference_gemv(c: &mut Criterion) {
+    let mut group = c.benchmark_group("cpu_reference_gemv");
+
+    for n in [1024, 2048, 4096] {
+        let m = 1;
+        let weights: Vec<i8> = (0..m * n)
+            .map(|i| match i % 3 {
+                0 => 1i8,
+                1 => -1i8,
+                _ => 0i8,
+            })
+            .collect();
+        let activations: Vec<f16> = (0..n)
+            .map(|i| f16::from_f32((i as f32 * 0.001).cos()))
+            .collect();
+
+        group.bench_with_input(BenchmarkId::new("cpu_gemv", n), &(weights, activations), |b, (w, a)| {
+            b.iter(|| {
+                let mut sum = 0.0f32;
+                for i in 0..n {
+                    sum += w[i] as f32 * a[i].to_f32();
+                }
+                sum
+            });
+        });
+    }
+    group.finish();
+}
+
+criterion_group!(
+    benches,
+    bench_pack_ternary,
+    bench_ternary_quantize,
+    bench_cpu_reference_gemv,
+);
+criterion_main!(benches);
