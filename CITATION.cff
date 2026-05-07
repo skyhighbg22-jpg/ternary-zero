@@ -1,0 +1,25 @@
+cff-version: 1.2.0
+message: "If you use Ternary-Zero, please cite it as follows."
+authors:
+- family-names: "Researcher"
+  given-names: "Your Name"
+  orcid: "https://orcid.org/0000-0000-0000-0000"
+title: "Ternary-Zero: Sub-Byte GEMV Acceleration for Consumer GPUs"
+version: 0.1.0
+date-released: 2026-05-07
+url: "https://github.com/yourusername/ternary-zero"
+identifiers:
+- type: doi
+  value: "10.5281/zenodo.XXXXXXX"
+- type: arXiv
+  value: "2605.XXXXX"
+license: MIT
+keywords:
+- "quantization"
+- "GEMV"
+- "LLM inference"
+- "CUDA"
+- "ternary"
+- "sub-byte"
+- "memory bandwidth"
+repository-code: "https://github.com/yourusername/ternary-zero"
