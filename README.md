@@ -202,10 +202,10 @@ If you use Ternary-Zero in your research, please cite:
 ## 👥 Credits
 
 **Maintainers:**
-- [Your Name] - Lead Research & Architecture
+- Vaishant Sai Sambu - Lead Research & Architecture
 
 **Contributors:**
-- [List contributors as they join]
+- None for now
 
 Inspired by works such as BitNet, GPTQ, and recent advances in extreme quantization for LLMs.
 
