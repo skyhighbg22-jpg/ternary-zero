@@ -7,6 +7,14 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from ternary_zero import Tensor, zeros, ones, randn, tensor, no_grad, is_grad_enabled
 import ternary_zero as tz
+from ternary_zero._backend import has_torch, to_numpy
+
+if has_torch():
+    import torch
+
+
+def _to_numpy(data):
+    return to_numpy(data)
 
 
 class TestTensorCreation:
@@ -18,12 +26,12 @@ class TestTensorCreation:
     def test_zeros(self):
         t = zeros(3, 4)
         assert t.shape == (3, 4)
-        assert np.all(t.data == 0)
+        assert np.all(_to_numpy(t.data) == 0)
 
     def test_ones(self):
         t = ones(2, 3)
         assert t.shape == (2, 3)
-        assert np.all(t.data == 1)
+        assert np.all(_to_numpy(t.data) == 1)
 
     def test_randn(self):
         t = randn(5, 5)
@@ -43,8 +51,9 @@ class TestTensorCreation:
     def test_clone(self):
         t = tensor([1.0, 2.0])
         c = t.clone()
-        c.data[0] = 99.0
-        assert t.data[0] == 1.0
+        c_data = _to_numpy(c.data)
+        c_data[0] = 99.0
+        assert _to_numpy(t.data)[0] == 1.0
 
 
 class TestTensorOps:
@@ -52,60 +61,60 @@ class TestTensorOps:
         a = tensor([1.0, 2.0])
         b = tensor([3.0, 4.0])
         c = a + b
-        assert np.allclose(c.data, [4.0, 6.0])
+        assert np.allclose(_to_numpy(c.data), [4.0, 6.0])
 
     def test_sub(self):
         a = tensor([5.0, 6.0])
         b = tensor([1.0, 2.0])
         c = a - b
-        assert np.allclose(c.data, [4.0, 4.0])
+        assert np.allclose(_to_numpy(c.data), [4.0, 4.0])
 
     def test_mul(self):
         a = tensor([2.0, 3.0])
         b = tensor([4.0, 5.0])
         c = a * b
-        assert np.allclose(c.data, [8.0, 15.0])
+        assert np.allclose(_to_numpy(c.data), [8.0, 15.0])
 
     def test_div(self):
         a = tensor([10.0, 20.0])
         b = tensor([2.0, 4.0])
         c = a / b
-        assert np.allclose(c.data, [5.0, 5.0])
+        assert np.allclose(_to_numpy(c.data), [5.0, 5.0])
 
     def test_scalar_ops(self):
         a = tensor([1.0, 2.0])
         c = a + 10
-        assert np.allclose(c.data, [11.0, 12.0])
+        assert np.allclose(_to_numpy(c.data), [11.0, 12.0])
         d = a * 3
-        assert np.allclose(d.data, [3.0, 6.0])
+        assert np.allclose(_to_numpy(d.data), [3.0, 6.0])
 
     def test_matmul(self):
         a = tensor([[1.0, 2.0], [3.0, 4.0]])
         b = tensor([[5.0, 6.0], [7.0, 8.0]])
         c = a @ b
         expected = np.array([[1.0, 2.0], [3.0, 4.0]]) @ np.array([[5.0, 6.0], [7.0, 8.0]])
-        assert np.allclose(c.data, expected)
+        assert np.allclose(_to_numpy(c.data), expected)
 
     def test_sum(self):
         a = tensor([[1.0, 2.0], [3.0, 4.0]])
         s = a.sum()
-        assert np.isclose(s.data, 10.0)
+        assert np.isclose(_to_numpy(s.data), 10.0)
 
     def test_mean(self):
         a = tensor([[1.0, 2.0], [3.0, 4.0]])
         m = a.mean()
-        assert np.isclose(m.data, 2.5)
+        assert np.isclose(_to_numpy(m.data), 2.5)
 
     def test_relu(self):
         a = tensor([-1.0, 2.0, -3.0, 4.0])
         r = a.relu()
-        assert np.allclose(r.data, [0.0, 2.0, 0.0, 4.0])
+        assert np.allclose(_to_numpy(r.data), [0.0, 2.0, 0.0, 4.0])
 
     def test_softmax(self):
         a = tensor([1.0, 2.0, 3.0])
         s = a.softmax()
-        assert np.isclose(s.data.sum(), 1.0)
-        assert np.all(s.data > 0)
+        assert np.isclose(_to_numpy(s.data).sum(), 1.0)
+        assert np.all(_to_numpy(s.data) > 0)
 
     def test_view(self):
         a = tensor([[1.0, 2.0, 3.0, 4.0]])
@@ -116,12 +125,12 @@ class TestTensorOps:
         a = tensor([[1.0, 2.0], [3.0, 4.0]])
         t = a.transpose(0, 1)
         assert t.shape == (2, 2)
-        assert np.isclose(t.data[0, 1], 3.0)
+        assert np.isclose(_to_numpy(t.data)[0, 1], 3.0)
 
     def test_neg(self):
         a = tensor([1.0, -2.0])
         c = -a
-        assert np.allclose(c.data, [-1.0, 2.0])
+        assert np.allclose(_to_numpy(c.data), [-1.0, 2.0])
 
 
 class TestAutograd:
@@ -130,7 +139,7 @@ class TestAutograd:
         y = x.sum()
         y.backward()
         assert x.grad is not None
-        assert np.allclose(x.grad.data, [1.0, 1.0])
+        assert np.allclose(_to_numpy(x.grad.data), [1.0, 1.0])
 
     def test_matmul_backward(self):
         x = tensor([[1.0, 2.0]], requires_grad=True)
@@ -139,8 +148,8 @@ class TestAutograd:
         y.backward()
         assert x.grad is not None
         assert w.grad is not None
-        assert np.allclose(x.grad.data, [[3.0, 4.0]])
-        assert np.allclose(w.grad.data, [[1.0], [2.0]])
+        assert np.allclose(_to_numpy(x.grad.data), [[3.0, 4.0]])
+        assert np.allclose(_to_numpy(w.grad.data), [[1.0], [2.0]])
 
     def test_mul_backward(self):
         x = tensor([2.0, 3.0], requires_grad=True)
@@ -148,15 +157,15 @@ class TestAutograd:
         z = x * y
         z = z.sum()
         z.backward()
-        assert np.allclose(x.grad.data, [4.0, 5.0])
-        assert np.allclose(y.grad.data, [2.0, 3.0])
+        assert np.allclose(_to_numpy(x.grad.data), [4.0, 5.0])
+        assert np.allclose(_to_numpy(y.grad.data), [2.0, 3.0])
 
     def test_relu_backward(self):
         x = tensor([-1.0, 2.0, -3.0], requires_grad=True)
         y = x.relu()
         y = y.sum()
         y.backward()
-        assert np.allclose(x.grad.data, [0.0, 1.0, 0.0])
+        assert np.allclose(_to_numpy(x.grad.data), [0.0, 1.0, 0.0])
 
     def test_no_grad(self):
         with no_grad():
@@ -167,7 +176,7 @@ class TestAutograd:
         x = tensor([2.0], requires_grad=True)
         y = (x * x + x * 3 + 5)
         y.backward()
-        assert np.isclose(x.grad.data[0], 7.0)  # 2*2 + 3 = 7
+        assert np.isclose(_to_numpy(x.grad.data)[0], 7.0)
 
 
 class TestNNModules:
@@ -202,7 +211,7 @@ class TestNNModules:
         relu = tz.nn.ReLU()
         x = tensor([-1.0, 2.0])
         y = relu(x)
-        assert np.allclose(y.data, [0.0, 2.0])
+        assert np.allclose(_to_numpy(y.data), [0.0, 2.0])
 
     def test_layernorm(self):
         ln = tz.nn.LayerNorm(4)
@@ -215,7 +224,7 @@ class TestNNModules:
         dp.eval()
         x = tensor([1.0, 2.0, 3.0, 4.0])
         y = dp(x)
-        assert np.allclose(y.data, x.data)
+        assert np.allclose(_to_numpy(y.data), _to_numpy(x.data))
 
     def test_module_repr(self):
         model = tz.nn.Sequential(
@@ -236,14 +245,14 @@ class TestNNModules:
         logits = tensor([[2.0, 1.0, 0.1]])
         target = tensor([0]).long()
         loss = loss_fn(logits, target)
-        assert loss.data.ndim == 0
+        assert loss.data.ndim == 0 or (hasattr(loss.data, 'dim') and loss.data.dim() == 0)
 
     def test_mse_loss(self):
         loss_fn = tz.nn.MSELoss()
         pred = tensor([1.0, 2.0])
         target = tensor([1.5, 2.5])
         loss = loss_fn(pred, target)
-        assert loss.data.ndim == 0
+        assert loss.data.ndim == 0 or (hasattr(loss.data, 'dim') and loss.data.dim() == 0)
 
 
 class TestOptim:
@@ -253,7 +262,7 @@ class TestOptim:
         y = (x * x).sum()
         y.backward()
         opt.step()
-        assert np.allclose(x.data, [0.8, 1.6])
+        assert np.allclose(_to_numpy(x.data), [0.8, 1.6])
 
     def test_adam(self):
         x = tensor([1.0, 2.0], requires_grad=True)
@@ -261,7 +270,7 @@ class TestOptim:
         y = (x * x).sum()
         y.backward()
         opt.step()
-        assert not np.allclose(x.data, [1.0, 2.0])
+        assert not np.allclose(_to_numpy(x.data), [1.0, 2.0])
 
     def test_sgd_momentum(self):
         x = tensor([1.0], requires_grad=True)
@@ -271,7 +280,7 @@ class TestOptim:
             y = (x * x).sum()
             y.backward()
             opt.step()
-        assert x.data[0] < 1.0
+        assert _to_numpy(x.data)[0] < 1.0
 
 
 class TestQuantize:
@@ -279,23 +288,24 @@ class TestQuantize:
         w = tensor([0.8, -0.7, 0.1, -0.05, 0.6, -0.9])
         ternary, scale = tz.quantize.ternary_quantize(w, alpha=0.5)
         assert scale > 0
-        assert set(np.unique(ternary.data)).issubset({-1, 0, 1})
+        ternary_np = _to_numpy(ternary.data)
+        assert set(np.unique(ternary_np)).issubset({-1, 0, 1})
 
     def test_pack_unpack_roundtrip(self):
         weights = tensor([1, 0, -1, 1, 0, 0, -1, 1, 0, 1, -1, 0, 1, -1, 0, 1])
         packed = tz.quantize.pack_ternary_to_u32(weights, 16)
         unpacked = tz.quantize.unpack_u32_to_ternary(packed, 16)
-        assert np.array_equal(weights.data.astype(np.int8), unpacked.data)
+        assert np.array_equal(_to_numpy(weights.data).astype(np.int8), _to_numpy(unpacked.data))
 
     def test_ternary_quantize_fixed(self):
         w = tensor([0.5, -0.5, 0.1, -0.1, 0.0])
         t = tz.quantize.ternary_quantize_fixed(w, threshold=0.2)
-        assert np.allclose(t.data, [1, -1, 0, 0, 0])
+        assert np.allclose(_to_numpy(t.data), [1, -1, 0, 0, 0])
 
     def test_dequantize(self):
         t = tensor([1, 0, -1, 1])
         d = tz.quantize.dequantize_ternary(t, 0.5)
-        assert np.allclose(d.data, [0.5, 0.0, -0.5, 0.5])
+        assert np.allclose(_to_numpy(d.data), [0.5, 0.0, -0.5, 0.5])
 
 
 class TestConv:
@@ -344,8 +354,8 @@ class TestPooling:
                        [13.0, 14.0, 15.0, 16.0]]]])
         y = layer(x)
         assert y.shape == (1, 1, 2, 2)
-        assert np.isclose(y.data[0, 0, 0, 0], 6.0)
-        assert np.isclose(y.data[0, 0, 1, 1], 16.0)
+        assert np.isclose(_to_numpy(y.data)[0, 0, 0, 0], 6.0)
+        assert np.isclose(_to_numpy(y.data)[0, 0, 1, 1], 16.0)
 
     def test_maxpool2d_stride(self):
         layer = tz.nn.MaxPool2d(kernel_size=2, stride=1)
@@ -361,7 +371,7 @@ class TestPooling:
                        [13.0, 14.0, 15.0, 16.0]]]])
         y = layer(x)
         assert y.shape == (1, 1, 2, 2)
-        assert np.isclose(y.data[0, 0, 0, 0], 3.5)
+        assert np.isclose(_to_numpy(y.data)[0, 0, 0, 0], 3.5)
 
     def test_adaptive_avg_pool(self):
         layer = tz.nn.AdaptiveAvgPool2d(1)
@@ -399,7 +409,7 @@ class TestEmbedding:
         emb = tz.nn.Embedding(5, 3, padding_idx=0)
         idx = tensor([0])
         y = emb(idx)
-        assert np.allclose(y.data, 0.0)
+        assert np.allclose(_to_numpy(y.data), 0.0)
 
 
 class TestContainers:
@@ -518,7 +528,7 @@ class TestAdagrad:
         y = (x * x).sum()
         y.backward()
         opt.step()
-        assert not np.allclose(x.data, [1.0, 2.0])
+        assert not np.allclose(_to_numpy(x.data), [1.0, 2.0])
 
 
 class TestNewOptimizers:
@@ -528,7 +538,7 @@ class TestNewOptimizers:
         y = (x * x).sum()
         y.backward()
         opt.step()
-        assert not np.allclose(x.data, [1.0, 2.0])
+        assert not np.allclose(_to_numpy(x.data), [1.0, 2.0])
 
     def test_rmsprop(self):
         x = tensor([1.0, 2.0], requires_grad=True)
@@ -536,7 +546,74 @@ class TestNewOptimizers:
         y = (x * x).sum()
         y.backward()
         opt.step()
-        assert not np.allclose(x.data, [1.0, 2.0])
+        assert not np.allclose(_to_numpy(x.data), [1.0, 2.0])
+
+
+class TestGPUAcceleration:
+    def test_backend_info(self):
+        assert isinstance(has_torch(), bool)
+        assert isinstance(tz.is_cuda_available(), bool)
+
+    def test_device_property(self):
+        t = tensor([1.0, 2.0])
+        assert isinstance(t.device, str)
+
+    def test_to_device(self):
+        t = tensor([1.0, 2.0])
+        t2 = t.to("cpu")
+        assert t2.device == "cpu"
+        assert np.allclose(_to_numpy(t2.data), [1.0, 2.0])
+
+    def test_dtype_property(self):
+        t = tensor([1.0, 2.0])
+        assert t.dtype == np.float32
+
+    def test_no_grad_context(self):
+        with no_grad():
+            t = tensor([1.0, 2.0], requires_grad=True)
+            assert not t.requires_grad
+
+    def test_enable_grad_context(self):
+        from ternary_zero import enable_grad
+        with no_grad():
+            with enable_grad():
+                t = tensor([1.0, 2.0], requires_grad=True)
+                assert t.requires_grad
+
+    @pytest.mark.skipif(not has_torch(), reason="PyTorch not available")
+    def test_torch_backend_active(self):
+        assert has_torch()
+        t = tensor([1.0, 2.0])
+        assert isinstance(t.data, torch.Tensor)
+
+    @pytest.mark.skipif(not has_torch() or not tz.is_cuda_available(), reason="CUDA not available")
+    def test_cuda_tensor(self):
+        t = tensor([1.0, 2.0])
+        t_cuda = t.cuda()
+        assert "cuda" in t_cuda.device
+
+    @pytest.mark.skipif(not has_torch() or not tz.is_cuda_available(), reason="CUDA not available")
+    def test_cuda_linear(self):
+        layer = tz.nn.Linear(3, 2)
+        layer.cuda()
+        x = randn(1, 3).cuda()
+        y = layer(x)
+        assert "cuda" in y.device
+
+
+class TestDataPipeline:
+    def test_tensor_dataset(self):
+        x_data = randn(10, 3)
+        y_data = randn(10, 2)
+        dataset = tz.data.TensorDataset(x_data, y_data)
+        assert len(dataset) == 10
+
+    def test_dataloader(self):
+        x_data = randn(10, 3)
+        y_data = randn(10, 2)
+        dataset = tz.data.TensorDataset(x_data, y_data)
+        loader = tz.data.DataLoader(dataset, batch_size=2, shuffle=True)
+        assert len(loader) == 5
 
 
 if __name__ == "__main__":

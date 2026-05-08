@@ -5,6 +5,10 @@ import numpy as np
 
 from ..tensor import Tensor
 from .._config import is_grad_enabled
+from .._backend import has_torch, to_numpy, get_default_device
+
+if has_torch():
+    import torch
 
 
 class Function:
@@ -33,9 +37,13 @@ class Function:
                 else:
                     raw_inputs.append(inp)
             result = cls._raw_forward(*raw_inputs, **kwargs)
+            if isinstance(result, tuple):
+                return tuple(Tensor(r) for r in result)
+            if has_torch() and isinstance(result, torch.Tensor):
+                return Tensor(result.detach())
             if isinstance(result, np.ndarray):
                 return Tensor(result)
-            return result
+            return Tensor(result)
 
         ctx = cls()
         ctx.needs_input_grad = tuple(
@@ -44,24 +52,27 @@ class Function:
         ctx._inputs = inputs
         ctx._kwargs = kwargs
 
-        raw_inputs = []
-        for inp in inputs:
-            if isinstance(inp, Tensor):
-                raw_inputs.append(inp)
+        raw_inputs = [t.data if isinstance(t, Tensor) else t for t in inputs]
+
+        result_data = cls._forward(ctx, *raw_inputs, **kwargs)
+
+        if has_torch():
+            if isinstance(result_data, tuple):
+                result = tuple(Tensor(d, requires_grad=any(ctx.needs_input_grad)) for d in result_data)
+            elif isinstance(result_data, torch.Tensor):
+                result = Tensor(result_data, requires_grad=any(ctx.needs_input_grad))
             else:
-                raw_inputs.append(inp)
-
-        result_data = cls._forward(ctx, *[t.data if isinstance(t, Tensor) else t for t in inputs], **kwargs)
-
-        if isinstance(result_data, np.ndarray):
-            result = Tensor(result_data, requires_grad=any(ctx.needs_input_grad), _grad_fn=ctx)
-        elif isinstance(result_data, tuple):
-            result = tuple(
-                Tensor(d, requires_grad=any(ctx.needs_input_grad), _grad_fn=ctx)
-                for d in result_data
-            )
+                result = Tensor(result_data, requires_grad=any(ctx.needs_input_grad))
         else:
-            result = Tensor(result_data, requires_grad=any(ctx.needs_input_grad), _grad_fn=ctx)
+            if isinstance(result_data, np.ndarray):
+                result = Tensor(result_data, requires_grad=any(ctx.needs_input_grad), _grad_fn=ctx)
+            elif isinstance(result_data, tuple):
+                result = tuple(
+                    Tensor(d, requires_grad=any(ctx.needs_input_grad), _grad_fn=ctx)
+                    for d in result_data
+                )
+            else:
+                result = Tensor(result_data, requires_grad=any(ctx.needs_input_grad), _grad_fn=ctx)
 
         ctx._output = result
         return result

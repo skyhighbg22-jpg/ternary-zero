@@ -5,6 +5,11 @@ import numpy as np
 from .module import Module
 from ..tensor import Tensor
 from ..autograd.functions import CrossEntropyLoss as CELoss, MSELoss as MSEFn
+from .._backend import has_torch
+
+if has_torch():
+    import torch
+    import torch.nn.functional as torchF
 
 
 class CrossEntropyLoss(Module):
@@ -14,6 +19,10 @@ class CrossEntropyLoss(Module):
         self.reduction = reduction
 
     def forward(self, input: Tensor, target: Tensor) -> Tensor:
+        if has_torch() and isinstance(input.data, torch.Tensor):
+            target_data = target.data.long() if isinstance(target.data, torch.Tensor) else torch.tensor(target.data, dtype=torch.long, device=input.data.device)
+            loss = torchF.cross_entropy(input.data, target_data, weight=self.weight)
+            return Tensor(loss)
         return CELoss.apply(input, target)
 
     def extra_repr(self) -> str:
@@ -26,6 +35,9 @@ class MSELoss(Module):
         self.reduction = reduction
 
     def forward(self, input: Tensor, target: Tensor) -> Tensor:
+        if has_torch() and isinstance(input.data, torch.Tensor):
+            loss = torchF.mse_loss(input.data, target.data if isinstance(target.data, torch.Tensor) else torch.tensor(target.data, device=input.data.device))
+            return Tensor(loss)
         return MSEFn.apply(input, target)
 
     def extra_repr(self) -> str:
@@ -38,6 +50,9 @@ class L1Loss(Module):
         self.reduction = reduction
 
     def forward(self, input: Tensor, target: Tensor) -> Tensor:
+        if has_torch() and isinstance(input.data, torch.Tensor):
+            loss = torchF.l1_loss(input.data, target.data if isinstance(target.data, torch.Tensor) else torch.tensor(target.data, device=input.data.device))
+            return Tensor(loss)
         diff = input.data - target.data
         if self.reduction == "mean":
             loss = np.mean(np.abs(diff))

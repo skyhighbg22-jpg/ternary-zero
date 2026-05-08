@@ -5,18 +5,29 @@ from collections import OrderedDict
 import numpy as np
 
 from ..tensor import Tensor
+from .._backend import has_torch, to_numpy, get_default_device
+
+if has_torch():
+    import torch
 
 
 class Parameter(Tensor):
     def __init__(self, data, requires_grad=True):
         if isinstance(data, Tensor):
             data = data.data
-        if not isinstance(data, np.ndarray):
-            data = np.array(data, dtype=np.float32)
-        super().__init__(data, requires_grad=requires_grad)
+        if has_torch() and isinstance(data, torch.Tensor):
+            super().__init__(data, requires_grad=requires_grad)
+        elif has_torch() and isinstance(data, np.ndarray):
+            super().__init__(data, requires_grad=requires_grad)
+        elif has_torch():
+            super().__init__(np.array(data, dtype=np.float32), requires_grad=requires_grad)
+        else:
+            if not isinstance(data, np.ndarray):
+                data = np.array(data, dtype=np.float32)
+            super().__init__(data, requires_grad=requires_grad)
 
     def __repr__(self):
-        return f"Parameter({repr(self.data)})"
+        return f"Parameter({repr(to_numpy(self.data))})"
 
 
 class Module:
@@ -25,7 +36,7 @@ class Module:
     def __init__(self):
         self._parameters: Dict[str, Parameter] = OrderedDict()
         self._modules: Dict[str, "Module"] = OrderedDict()
-        self._buffers: Dict[str, np.ndarray] = OrderedDict()
+        self._buffers: Dict[str, "np.ndarray"] = OrderedDict()
 
     def forward(self, *args, **kwargs):
         raise NotImplementedError
@@ -66,7 +77,7 @@ class Module:
             sub_prefix = f"{prefix}.{name}" if prefix else name
             yield from module.named_modules(prefix=sub_prefix)
 
-    def buffers(self, recurse: bool = True) -> Iterator[np.ndarray]:
+    def buffers(self, recurse: bool = True):
         for buf in self._buffers.values():
             yield buf
         if recurse:
@@ -78,7 +89,7 @@ class Module:
             raise TypeError(f"expected Parameter or None, got {type(param)}")
         self._parameters[name] = param
 
-    def register_buffer(self, name: str, buf: np.ndarray):
+    def register_buffer(self, name: str, buf):
         self._buffers[name] = buf
 
     def add_module(self, name: str, module: Optional["Module"]):
@@ -123,20 +134,32 @@ class Module:
             if set_to_none:
                 param.grad = None
             elif param.grad is not None:
-                param.grad.data.fill(0)
+                if has_torch() and isinstance(param.data, torch.Tensor):
+                    if param.data.grad is not None:
+                        param.data.grad.zero_()
+                else:
+                    param.grad.data.fill(0)
 
     def state_dict(self) -> Dict[str, np.ndarray]:
         state = OrderedDict()
         for name, param in self.named_parameters():
-            state[name] = param.data.copy()
+            state[name] = to_numpy(param.data).copy()
         for name, buf in self._buffers.items():
-            state[f"_buffers.{name}"] = buf.copy()
+            if has_torch() and isinstance(buf, torch.Tensor):
+                state[f"_buffers.{name}"] = buf.detach().cpu().numpy().copy()
+            elif isinstance(buf, np.ndarray):
+                state[f"_buffers.{name}"] = buf.copy()
+            else:
+                state[f"_buffers.{name}"] = buf
         return state
 
     def load_state_dict(self, state_dict: Dict[str, np.ndarray]):
         for name, param in self.named_parameters():
             if name in state_dict:
-                param.data[:] = state_dict[name]
+                if has_torch() and isinstance(param.data, torch.Tensor):
+                    param.data.copy_(torch.tensor(state_dict[name], device=param.data.device, dtype=param.data.dtype))
+                else:
+                    param.data[:] = state_dict[name]
             else:
                 raise KeyError(f"missing key in state_dict: '{name}'")
 
@@ -165,6 +188,24 @@ class Module:
             main_str += "\n  " + "\n  ".join(lines) + "\n"
         main_str += ")"
         return main_str
+
+    def to(self, device: str) -> "Module":
+        for param in self.parameters(recurse=False):
+            if has_torch() and isinstance(param.data, torch.Tensor):
+                param.data = param.data.to(device)
+        for name, buf in self._buffers.items():
+            if has_torch() and isinstance(buf, torch.Tensor):
+                self._buffers[name] = buf.to(device)
+        for module in self._modules.values():
+            module.to(device)
+        return self
+
+    def cuda(self, device: Optional[str] = None) -> "Module":
+        target = device or get_default_device()
+        return self.to(target)
+
+    def cpu(self) -> "Module":
+        return self.to("cpu")
 
 
 def _add_indent(text: str, indent: int) -> str:

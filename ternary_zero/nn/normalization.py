@@ -4,6 +4,10 @@ import numpy as np
 
 from .module import Module, Parameter
 from ..tensor import Tensor
+from .._backend import has_torch
+
+if has_torch():
+    import torch
 
 
 class LayerNorm(Module):
@@ -28,6 +32,14 @@ class LayerNorm(Module):
             self.bias = None
 
     def forward(self, input: Tensor) -> Tensor:
+        if has_torch() and isinstance(input.data, torch.Tensor):
+            w = self.weight.data if self.elementwise_affine else None
+            b = self.bias.data if self.elementwise_affine else None
+            output = torch.nn.functional.layer_norm(
+                input.data, self.normalized_shape, w, b, self.eps
+            )
+            return Tensor(output)
+
         x = input.data
         axis = tuple(range(-len(self.normalized_shape), 0))
         mean = np.mean(x, axis=axis, keepdims=True)
@@ -54,6 +66,30 @@ class BatchNorm1d(Module):
         self.register_buffer("running_var", np.ones(num_features, dtype=np.float32))
 
     def forward(self, input: Tensor) -> Tensor:
+        if has_torch() and isinstance(input.data, torch.Tensor):
+            device = input.data.device
+            w = self.weight.data
+            b = self.bias.data
+            rm = self.running_mean
+            rv = self.running_var
+            if isinstance(rm, np.ndarray):
+                rm = torch.from_numpy(rm).to(device)
+                rv = torch.from_numpy(rv).to(device)
+            if self.training:
+                output = torch.nn.functional.batch_norm(
+                    input.data, rm, rv, w, b, self.training, self.momentum, self.eps
+                )
+                with torch.no_grad():
+                    mean = input.data.mean(dim=0)
+                    var = input.data.var(dim=0, unbiased=False)
+                    self.running_mean = ((1 - self.momentum) * self.running_mean + self.momentum * mean.detach().cpu().numpy())
+                    self.running_var = ((1 - self.momentum) * self.running_var + self.momentum * var.detach().cpu().numpy())
+            else:
+                output = torch.nn.functional.batch_norm(
+                    input.data, rm, rv, w, b, False, self.momentum, self.eps
+                )
+            return Tensor(output)
+
         x = input.data
         if self.training:
             mean = np.mean(x, axis=0)

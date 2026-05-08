@@ -5,9 +5,18 @@ from collections import OrderedDict
 import numpy as np
 
 from ..tensor import Tensor
+from .._backend import has_torch, to_numpy
+
+if has_torch():
+    import torch
 
 
 def backward(tensor: Tensor, gradient: Optional[Tensor] = None):
+    if has_torch() and isinstance(tensor.data, torch.Tensor):
+        grad_data = gradient.data if gradient is not None else None
+        tensor.data.backward(gradient=grad_data, retain_graph=False)
+        return
+
     if not tensor.requires_grad:
         raise RuntimeError("backward() called on a tensor that does not require grad")
 
@@ -21,7 +30,8 @@ def backward(tensor: Tensor, gradient: Optional[Tensor] = None):
             )
 
     tensor._ensure_grad()
-    tensor.grad.data += gradient.data
+    if hasattr(tensor, "_grad") and tensor._grad is not None:
+        tensor._grad.data += gradient.data
 
     visited = set()
     topo_order = []
@@ -32,7 +42,7 @@ def backward(tensor: Tensor, gradient: Optional[Tensor] = None):
             continue
 
         fn = node._grad_fn
-        grad_output = node.grad
+        grad_output = node._grad if hasattr(node, "_grad") else None
 
         if grad_output is None:
             continue
@@ -64,12 +74,13 @@ def backward(tensor: Tensor, gradient: Optional[Tensor] = None):
 
             if grad_tensor.shape != inp.shape:
                 if inp.shape == ():
-                    grad_tensor = Tensor(np.array(grad_tensor.data.sum(), dtype=np.float32))
+                    grad_tensor = Tensor(np.array(to_numpy(grad_tensor.data).sum(), dtype=np.float32))
                 else:
-                    grad_tensor = Tensor(_unbroadcast(grad_tensor.data, inp.shape))
+                    grad_tensor = Tensor(_unbroadcast(to_numpy(grad_tensor.data), inp.shape))
 
             inp._ensure_grad()
-            inp.grad.data += grad_tensor.data
+            if hasattr(inp, "_grad") and inp._grad is not None:
+                inp._grad.data += grad_tensor.data
 
 
 def _build_topo(node, visited, topo_order):

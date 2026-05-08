@@ -4,11 +4,17 @@ import numpy as np
 
 from .module import Module
 from ..tensor import Tensor
-from ..autograd.function import Function
+from .._backend import has_torch
+
+if has_torch():
+    import torch
+    import torch.nn.functional as torchF
 
 
 class ReLU(Module):
     def forward(self, input: Tensor) -> Tensor:
+        if has_torch() and isinstance(input.data, torch.Tensor):
+            return Tensor(torch.relu(input.data))
         from ..autograd.functions import ReLU as ReLUFn
         return ReLUFn.apply(input)
 
@@ -18,6 +24,8 @@ class ReLU(Module):
 
 class GELU(Module):
     def forward(self, input: Tensor) -> Tensor:
+        if has_torch() and isinstance(input.data, torch.Tensor):
+            return Tensor(torchF.gelu(input.data))
         x = input.data
         c = np.sqrt(2.0 / np.pi)
         result = 0.5 * x * (1.0 + np.tanh(c * (x + 0.044715 * x ** 3)))
@@ -26,11 +34,15 @@ class GELU(Module):
 
 class Sigmoid(Module):
     def forward(self, input: Tensor) -> Tensor:
+        if has_torch() and isinstance(input.data, torch.Tensor):
+            return Tensor(torch.sigmoid(input.data))
         return Tensor((1.0 / (1.0 + np.exp(-input.data))).astype(np.float32))
 
 
 class Tanh(Module):
     def forward(self, input: Tensor) -> Tensor:
+        if has_torch() and isinstance(input.data, torch.Tensor):
+            return Tensor(torch.tanh(input.data))
         return Tensor(np.tanh(input.data).astype(np.float32))
 
 
@@ -40,6 +52,8 @@ class Softmax(Module):
         self.dim = dim
 
     def forward(self, input: Tensor) -> Tensor:
+        if has_torch() and isinstance(input.data, torch.Tensor):
+            return Tensor(torchF.softmax(input.data.float(), dim=self.dim))
         from ..autograd.functions import Softmax as SoftmaxFn
         return SoftmaxFn.apply(input, dim=self.dim)
 
@@ -53,6 +67,8 @@ class LogSoftmax(Module):
         self.dim = dim
 
     def forward(self, input: Tensor) -> Tensor:
+        if has_torch() and isinstance(input.data, torch.Tensor):
+            return Tensor(torchF.log_softmax(input.data.float(), dim=self.dim))
         from ..autograd.functions import Softmax as SoftmaxFn, Log as LogFn
         sm = SoftmaxFn.apply(input, dim=self.dim)
         return LogFn.apply(sm)

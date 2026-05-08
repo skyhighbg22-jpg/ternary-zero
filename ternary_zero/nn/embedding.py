@@ -4,6 +4,10 @@ import numpy as np
 
 from .module import Module, Parameter
 from ..tensor import Tensor
+from .._backend import has_torch
+
+if has_torch():
+    import torch
 
 
 class Embedding(Module):
@@ -19,13 +23,22 @@ class Embedding(Module):
         self.padding_idx = padding_idx
 
         self.weight = Parameter(
-            np.random.randn(num_embeddings, embedding_dim).astype(np.float32)
-            * 0.01
+            np.random.randn(num_embeddings, embedding_dim).astype(np.float32) * 0.01
         )
         if padding_idx is not None:
-            self.weight.data[padding_idx] = 0.0
+            if has_torch() and isinstance(self.weight.data, torch.Tensor):
+                with torch.no_grad():
+                    self.weight.data[padding_idx] = 0.0
+            else:
+                self.weight.data[padding_idx] = 0.0
 
     def forward(self, input: Tensor) -> Tensor:
+        if has_torch() and isinstance(input.data, torch.Tensor):
+            output = torch.nn.functional.embedding(
+                input.data.long(), self.weight.data,
+                padding_idx=self.padding_idx,
+            )
+            return Tensor(output)
         indices = input.data.astype(int)
         return Tensor(self.weight.data[indices])
 

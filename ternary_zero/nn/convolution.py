@@ -5,6 +5,11 @@ from typing import Optional, Tuple, Union
 
 from .module import Module, Parameter
 from ..tensor import Tensor
+from .._backend import has_torch
+
+if has_torch():
+    import torch
+    import torch.nn.functional as torchF
 
 
 def _pair(x: Union[int, Tuple[int, int]]) -> Tuple[int, int]:
@@ -46,6 +51,18 @@ class Conv2d(Module):
             self.bias = None
 
     def forward(self, input: Tensor) -> Tensor:
+        if has_torch() and isinstance(input.data, torch.Tensor):
+            w = self.weight.data
+            b = self.bias.data if self.bias is not None else None
+            output = torchF.conv2d(
+                input.data, w, b,
+                stride=self.stride,
+                padding=self.padding,
+                dilation=self.dilation,
+                groups=self.groups,
+            )
+            return Tensor(output)
+
         x = input.data
         w = self.weight.data
         stride_h, stride_w = self.stride
@@ -118,6 +135,16 @@ class Conv1d(Module):
             self.bias = None
 
     def forward(self, input: Tensor) -> Tensor:
+        if has_torch() and isinstance(input.data, torch.Tensor):
+            w = self.weight.data
+            b = self.bias.data if self.bias is not None else None
+            output = torchF.conv1d(
+                input.data, w, b,
+                stride=self.stride,
+                padding=self.padding,
+            )
+            return Tensor(output)
+
         x = input.data
         w = self.weight.data
 

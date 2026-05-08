@@ -3,6 +3,10 @@ import numpy as np
 
 from .tensor import Tensor
 from .autograd.functions import TernaryQuantizeSTE
+from ._backend import has_torch, to_numpy
+
+if has_torch():
+    import torch
 
 
 def ternary_quantize(
@@ -13,9 +17,16 @@ def ternary_quantize(
     ternary = result[0] if isinstance(result, tuple) else result
     scale = result[1] if isinstance(result, tuple) else 1.0
     if isinstance(scale, Tensor):
-        scale = float(scale.data)
+        scale_data = scale.data
+        if has_torch() and isinstance(scale_data, torch.Tensor):
+            scale = float(scale_data.item())
+        else:
+            scale = float(scale_data)
     elif not isinstance(scale, (int, float)):
-        scale = float(scale)
+        if has_torch() and isinstance(scale, torch.Tensor):
+            scale = float(scale.item())
+        else:
+            scale = float(scale)
     return ternary, scale
 
 
@@ -23,7 +34,7 @@ def ternary_quantize_fixed(
     weights: Tensor,
     threshold: float = 0.0,
 ) -> Tensor:
-    flat = weights.data.flatten()
+    flat = to_numpy(weights.data).flatten()
     result = np.where(flat > threshold, 1, np.where(flat < -threshold, -1, 0))
     return Tensor(result.reshape(weights.shape).astype(np.int8))
 
@@ -32,14 +43,17 @@ def dequantize_ternary(
     ternary_weights: Tensor,
     scale: float,
 ) -> Tensor:
-    return Tensor((ternary_weights.data.astype(np.float32) * scale))
+    tw = ternary_weights.data
+    if has_torch() and isinstance(tw, torch.Tensor):
+        return Tensor(tw.float() * scale)
+    return Tensor((tw.astype(np.float32) * scale))
 
 
 def pack_ternary_to_u32(
     weights: Tensor,
     n: int,
 ) -> Tensor:
-    w = weights.data.flatten().astype(np.int8)
+    w = to_numpy(weights.data).flatten().astype(np.int8)
     total = len(w)
     assert total % n == 0, f"weight length {total} must be multiple of N={n}"
     assert n % 16 == 0, f"N must be multiple of 16, got {n}"
@@ -71,7 +85,7 @@ def unpack_u32_to_ternary(
     packed: Tensor,
     n: int,
 ) -> Tensor:
-    p = packed.data.flatten().astype(np.uint32)
+    p = to_numpy(packed.data).flatten().astype(np.uint32)
     packed_cols = n // 16
     assert len(p) % packed_cols == 0
     m = len(p) // packed_cols
@@ -96,7 +110,7 @@ def unpack_u32_to_ternary(
 
 
 def ternary_weight_analysis(weights: Tensor) -> dict:
-    w = weights.data.flatten()
+    w = to_numpy(weights.data).flatten()
     total = len(w)
     zeros = int(np.sum(w == 0))
     positives = int(np.sum(w > 0))
@@ -108,6 +122,6 @@ def ternary_weight_analysis(weights: Tensor) -> dict:
         "positives": positives,
         "negatives": negatives,
         "sparsity": sparsity,
-        "compression_ratio_vs_fp32": 16.0,   # 32-bit / 2-bit = 16×
-        "compression_ratio_vs_fp16": 8.0,    # 16-bit / 2-bit = 8×
+        "compression_ratio_vs_fp32": 16.0,
+        "compression_ratio_vs_fp16": 8.0,
     }

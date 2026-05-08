@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import numpy as np
 from ..tensor import Tensor
+from .._backend import has_torch, to_numpy
+
+if has_torch():
+    import torch
 
 
 def pack_binary(weights: Tensor) -> Tensor:
-    w = weights.data.flatten()
+    w = to_numpy(weights.data).flatten()
     n = len(w)
     packed_size = (n + 31) // 32
     packed = np.zeros(packed_size, dtype=np.uint32)
@@ -18,7 +22,7 @@ def pack_binary(weights: Tensor) -> Tensor:
 
 
 def unpack_binary(packed: Tensor, n: int) -> Tensor:
-    p = packed.data.astype(np.uint32)
+    p = to_numpy(packed.data).astype(np.uint32)
     result = np.zeros(n, dtype=np.float32)
 
     for i in range(n):
@@ -38,8 +42,8 @@ def binary_matmul(
     n: int,
 ) -> Tensor:
     a_unpacked = unpack_binary(a_packed, m * k)
-    a_matrix = a_unpacked.data.reshape(m, k)
-    b_matrix = b.data.reshape(k, n)
+    a_matrix = to_numpy(a_unpacked.data).reshape(m, k)
+    b_matrix = to_numpy(b.data).reshape(k, n)
     result = a_matrix @ b_matrix
     return Tensor(result.astype(np.float32))
 
@@ -54,20 +58,20 @@ def bitcount(x: np.ndarray) -> np.ndarray:
 
 
 def popcount_xor(a: Tensor, b: Tensor) -> Tensor:
-    a_p = a.data.astype(np.uint32)
-    b_p = b.data.astype(np.uint32)
+    a_p = to_numpy(a.data).astype(np.uint32)
+    b_p = to_numpy(b.data).astype(np.uint32)
     xored = a_p ^ b_p
     counts = bitcount(xored)
     return Tensor(counts)
 
 
 def hamming_distance(a: Tensor, b: Tensor) -> int:
-    xored = a.data.astype(np.uint32) ^ b.data.astype(np.uint32)
+    xored = to_numpy(a.data).astype(np.uint32) ^ to_numpy(b.data).astype(np.uint32)
     return int(np.sum(bitcount(xored)))
 
 
 def binary_weight_stats(weights: Tensor) -> dict:
-    w = weights.data.flatten()
+    w = to_numpy(weights.data).flatten()
     total = len(w)
     pos = int(np.sum(w > 0))
     neg = int(np.sum(w < 0))

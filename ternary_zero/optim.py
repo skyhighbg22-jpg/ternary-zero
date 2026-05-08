@@ -5,6 +5,10 @@ import numpy as np
 
 from .tensor import Tensor
 from .nn.module import Parameter
+from ._backend import has_torch, to_numpy
+
+if has_torch():
+    import torch
 
 
 class Optimizer:
@@ -26,16 +30,32 @@ class Optimizer:
     def zero_grad(self, set_to_none: bool = False):
         for group in self.param_groups:
             for param in group["params"]:
-                if set_to_none:
-                    param.grad = None
-                elif param.grad is not None:
-                    param.grad.data.fill(0)
+                if has_torch() and isinstance(param.data, torch.Tensor):
+                    if set_to_none:
+                        param.data.grad = None
+                    elif param.data.grad is not None:
+                        param.data.grad.zero_()
+                else:
+                    if set_to_none:
+                        param.grad = None
+                    elif param.grad is not None:
+                        param.grad.data.fill(0)
 
     def step(self):
         raise NotImplementedError
 
     def state_dict(self) -> dict:
-        return {"state": self.state, "param_groups": self.param_groups}
+        state_np = {}
+        for k, v in self.state.items():
+            state_np[k] = {}
+            for sk, sv in v.items():
+                if has_torch() and isinstance(sv, torch.Tensor):
+                    state_np[k][sk] = sv.detach().cpu().numpy()
+                elif isinstance(sv, np.ndarray):
+                    state_np[k][sk] = sv
+                else:
+                    state_np[k][sk] = sv
+        return {"state": state_np, "param_groups": self.param_groups}
 
     def load_state_dict(self, state_dict: dict):
         self.state = state_dict["state"]
@@ -62,28 +82,41 @@ class SGD(Optimizer):
             nesterov = group["nesterov"]
 
             for param in group["params"]:
-                if param.grad is None:
-                    continue
-
-                grad = param.grad.data.copy()
-
-                if weight_decay != 0.0:
-                    grad = grad + weight_decay * param.data
-
-                if momentum != 0.0:
-                    param_id = id(param)
-                    if param_id not in self.state:
-                        self.state[param_id] = {"momentum_buffer": np.zeros_like(param.data)}
-
-                    buf = self.state[param_id]["momentum_buffer"]
-                    buf[:] = momentum * buf + grad
-
-                    if nesterov:
-                        grad = grad + momentum * buf
-                    else:
-                        grad = buf
-
-                param.data -= lr * grad
+                if has_torch() and isinstance(param.data, torch.Tensor):
+                    with torch.no_grad():
+                        grad = param.data.grad
+                        if grad is None:
+                            continue
+                        if weight_decay != 0.0:
+                            grad = grad + weight_decay * param.data
+                        if momentum != 0.0:
+                            param_id = id(param)
+                            if param_id not in self.state:
+                                self.state[param_id] = {"momentum_buffer": torch.zeros_like(param.data)}
+                            buf = self.state[param_id]["momentum_buffer"]
+                            buf.mul_(momentum).add_(grad)
+                            if nesterov:
+                                grad = grad + momentum * buf
+                            else:
+                                grad = buf
+                        param.data -= lr * grad
+                else:
+                    if param.grad is None:
+                        continue
+                    grad = param.grad.data.copy()
+                    if weight_decay != 0.0:
+                        grad = grad + weight_decay * param.data
+                    if momentum != 0.0:
+                        param_id = id(param)
+                        if param_id not in self.state:
+                            self.state[param_id] = {"momentum_buffer": np.zeros_like(param.data)}
+                        buf = self.state[param_id]["momentum_buffer"]
+                        buf[:] = momentum * buf + grad
+                        if nesterov:
+                            grad = grad + momentum * buf
+                        else:
+                            grad = buf
+                    param.data -= lr * grad
 
 
 class Adam(Optimizer):
@@ -106,41 +139,59 @@ class Adam(Optimizer):
             weight_decay = group["weight_decay"]
 
             for param in group["params"]:
-                if param.grad is None:
-                    continue
-
-                grad = param.grad.data.copy()
-
-                if weight_decay != 0.0:
-                    grad = grad + weight_decay * param.data
-
-                param_id = id(param)
-                if param_id not in self.state:
-                    self.state[param_id] = {
-                        "step": 0,
-                        "exp_avg": np.zeros_like(param.data),
-                        "exp_avg_sq": np.zeros_like(param.data),
-                    }
-
-                state = self.state[param_id]
-                state["step"] += 1
-
-                exp_avg = state["exp_avg"]
-                exp_avg_sq = state["exp_avg_sq"]
-
-                exp_avg[:] = beta1 * exp_avg + (1 - beta1) * grad
-                exp_avg_sq[:] = beta2 * exp_avg_sq + (1 - beta2) * (grad ** 2)
-
-                bias_correction1 = 1 - beta1 ** state["step"]
-                bias_correction2 = 1 - beta2 ** state["step"]
-
-                corrected_exp_avg = exp_avg / bias_correction1
-                corrected_exp_avg_sq = exp_avg_sq / bias_correction2
-
-                step_size = lr / bias_correction1
-                denom = np.sqrt(corrected_exp_avg_sq) + eps
-
-                param.data -= step_size * corrected_exp_avg / denom
+                if has_torch() and isinstance(param.data, torch.Tensor):
+                    with torch.no_grad():
+                        grad = param.data.grad
+                        if grad is None:
+                            continue
+                        if weight_decay != 0.0:
+                            grad = grad + weight_decay * param.data
+                        param_id = id(param)
+                        if param_id not in self.state:
+                            self.state[param_id] = {
+                                "step": 0,
+                                "exp_avg": torch.zeros_like(param.data),
+                                "exp_avg_sq": torch.zeros_like(param.data),
+                            }
+                        state = self.state[param_id]
+                        state["step"] += 1
+                        exp_avg = state["exp_avg"]
+                        exp_avg_sq = state["exp_avg_sq"]
+                        exp_avg.mul_(beta1).add_(grad, alpha=1 - beta1)
+                        exp_avg_sq.mul_(beta2).addcmul_(grad, grad, value=1 - beta2)
+                        bias_correction1 = 1 - beta1 ** state["step"]
+                        bias_correction2 = 1 - beta2 ** state["step"]
+                        corrected_exp_avg = exp_avg / bias_correction1
+                        corrected_exp_avg_sq = exp_avg_sq / bias_correction2
+                        step_size = lr / bias_correction1
+                        denom = corrected_exp_avg_sq.sqrt().add_(eps)
+                        param.data -= step_size * corrected_exp_avg / denom
+                else:
+                    if param.grad is None:
+                        continue
+                    grad = param.grad.data.copy()
+                    if weight_decay != 0.0:
+                        grad = grad + weight_decay * param.data
+                    param_id = id(param)
+                    if param_id not in self.state:
+                        self.state[param_id] = {
+                            "step": 0,
+                            "exp_avg": np.zeros_like(param.data),
+                            "exp_avg_sq": np.zeros_like(param.data),
+                        }
+                    state = self.state[param_id]
+                    state["step"] += 1
+                    exp_avg = state["exp_avg"]
+                    exp_avg_sq = state["exp_avg_sq"]
+                    exp_avg[:] = beta1 * exp_avg + (1 - beta1) * grad
+                    exp_avg_sq[:] = beta2 * exp_avg_sq + (1 - beta2) * (grad ** 2)
+                    bias_correction1 = 1 - beta1 ** state["step"]
+                    bias_correction2 = 1 - beta2 ** state["step"]
+                    corrected_exp_avg = exp_avg / bias_correction1
+                    corrected_exp_avg_sq = exp_avg_sq / bias_correction2
+                    step_size = lr / bias_correction1
+                    denom = np.sqrt(corrected_exp_avg_sq) + eps
+                    param.data -= step_size * corrected_exp_avg / denom
 
 
 class AdamW(Optimizer):
@@ -163,38 +214,56 @@ class AdamW(Optimizer):
             weight_decay = group["weight_decay"]
 
             for param in group["params"]:
-                if param.grad is None:
-                    continue
-
-                param.data -= lr * weight_decay * param.data
-
-                grad = param.grad.data.copy()
-
-                param_id = id(param)
-                if param_id not in self.state:
-                    self.state[param_id] = {
-                        "step": 0,
-                        "exp_avg": np.zeros_like(param.data),
-                        "exp_avg_sq": np.zeros_like(param.data),
-                    }
-
-                state = self.state[param_id]
-                state["step"] += 1
-
-                exp_avg = state["exp_avg"]
-                exp_avg_sq = state["exp_avg_sq"]
-
-                exp_avg[:] = beta1 * exp_avg + (1 - beta1) * grad
-                exp_avg_sq[:] = beta2 * exp_avg_sq + (1 - beta2) * (grad ** 2)
-
-                bias_correction1 = 1 - beta1 ** state["step"]
-                bias_correction2 = 1 - beta2 ** state["step"]
-
-                corrected_exp_avg = exp_avg / bias_correction1
-                corrected_exp_avg_sq = exp_avg_sq / bias_correction2
-
-                denom = np.sqrt(corrected_exp_avg_sq) + eps
-                param.data -= lr * corrected_exp_avg / denom
+                if has_torch() and isinstance(param.data, torch.Tensor):
+                    with torch.no_grad():
+                        grad = param.data.grad
+                        if grad is None:
+                            continue
+                        param.data -= lr * weight_decay * param.data
+                        param_id = id(param)
+                        if param_id not in self.state:
+                            self.state[param_id] = {
+                                "step": 0,
+                                "exp_avg": torch.zeros_like(param.data),
+                                "exp_avg_sq": torch.zeros_like(param.data),
+                            }
+                        state = self.state[param_id]
+                        state["step"] += 1
+                        exp_avg = state["exp_avg"]
+                        exp_avg_sq = state["exp_avg_sq"]
+                        exp_avg.mul_(beta1).add_(grad, alpha=1 - beta1)
+                        exp_avg_sq.mul_(beta2).addcmul_(grad, grad, value=1 - beta2)
+                        bias_correction1 = 1 - beta1 ** state["step"]
+                        bias_correction2 = 1 - beta2 ** state["step"]
+                        corrected_exp_avg = exp_avg / bias_correction1
+                        corrected_exp_avg_sq = exp_avg_sq / bias_correction2
+                        step_size = lr / bias_correction1
+                        denom = corrected_exp_avg_sq.sqrt().add_(eps)
+                        param.data -= step_size * corrected_exp_avg / denom
+                else:
+                    if param.grad is None:
+                        continue
+                    param.data -= lr * weight_decay * param.data
+                    grad = param.grad.data.copy()
+                    param_id = id(param)
+                    if param_id not in self.state:
+                        self.state[param_id] = {
+                            "step": 0,
+                            "exp_avg": np.zeros_like(param.data),
+                            "exp_avg_sq": np.zeros_like(param.data),
+                        }
+                    state = self.state[param_id]
+                    state["step"] += 1
+                    exp_avg = state["exp_avg"]
+                    exp_avg_sq = state["exp_avg_sq"]
+                    exp_avg[:] = beta1 * exp_avg + (1 - beta1) * grad
+                    exp_avg_sq[:] = beta2 * exp_avg_sq + (1 - beta2) * (grad ** 2)
+                    bias_correction1 = 1 - beta1 ** state["step"]
+                    bias_correction2 = 1 - beta2 ** state["step"]
+                    corrected_exp_avg = exp_avg / bias_correction1
+                    corrected_exp_avg_sq = exp_avg_sq / bias_correction2
+                    denom = np.sqrt(corrected_exp_avg_sq) + eps
+                    param.data -= lr * corrected_exp_avg / denom
 
 
 class RMSprop(Optimizer):
@@ -219,34 +288,51 @@ class RMSprop(Optimizer):
             momentum = group["momentum"]
 
             for param in group["params"]:
-                if param.grad is None:
-                    continue
-
-                grad = param.grad.data.copy()
-
-                if weight_decay != 0.0:
-                    grad = grad + weight_decay * param.data
-
-                param_id = id(param)
-                if param_id not in self.state:
-                    self.state[param_id] = {
-                        "square_avg": np.zeros_like(param.data),
-                        "momentum_buffer": np.zeros_like(param.data) if momentum > 0 else None,
-                    }
-
-                state = self.state[param_id]
-                square_avg = state["square_avg"]
-                square_avg[:] = alpha * square_avg + (1 - alpha) * (grad ** 2)
-
-                avg = np.sqrt(square_avg) + eps
-                update = grad / avg
-
-                if momentum > 0:
-                    buf = state["momentum_buffer"]
-                    buf[:] = momentum * buf + update
-                    update = buf
-
-                param.data -= lr * update
+                if has_torch() and isinstance(param.data, torch.Tensor):
+                    with torch.no_grad():
+                        grad = param.data.grad
+                        if grad is None:
+                            continue
+                        if weight_decay != 0.0:
+                            grad = grad + weight_decay * param.data
+                        param_id = id(param)
+                        if param_id not in self.state:
+                            self.state[param_id] = {
+                                "square_avg": torch.zeros_like(param.data),
+                                "momentum_buffer": torch.zeros_like(param.data) if momentum > 0 else None,
+                            }
+                        state = self.state[param_id]
+                        square_avg = state["square_avg"]
+                        square_avg.mul_(alpha).addcmul_(grad, grad, value=1 - alpha)
+                        avg = square_avg.sqrt().add_(eps)
+                        update = grad / avg
+                        if momentum > 0:
+                            buf = state["momentum_buffer"]
+                            buf.mul_(momentum).add_(update)
+                            update = buf
+                        param.data -= lr * update
+                else:
+                    if param.grad is None:
+                        continue
+                    grad = param.grad.data.copy()
+                    if weight_decay != 0.0:
+                        grad = grad + weight_decay * param.data
+                    param_id = id(param)
+                    if param_id not in self.state:
+                        self.state[param_id] = {
+                            "square_avg": np.zeros_like(param.data),
+                            "momentum_buffer": np.zeros_like(param.data) if momentum > 0 else None,
+                        }
+                    state = self.state[param_id]
+                    square_avg = state["square_avg"]
+                    square_avg[:] = alpha * square_avg + (1 - alpha) * (grad ** 2)
+                    avg = np.sqrt(square_avg) + eps
+                    update = grad / avg
+                    if momentum > 0:
+                        buf = state["momentum_buffer"]
+                        buf[:] = momentum * buf + update
+                        update = buf
+                    param.data -= lr * update
 
 
 class Adagrad(Optimizer):
@@ -269,29 +355,37 @@ class Adagrad(Optimizer):
             weight_decay = group["weight_decay"]
 
             for param in group["params"]:
-                if param.grad is None:
-                    continue
-
-                grad = param.grad.data.copy()
-
-                if weight_decay != 0.0:
-                    grad = grad + weight_decay * param.data
-
-                param_id = id(param)
-                if param_id not in self.state:
-                    self.state[param_id] = {
-                        "step": 0,
-                        "sum_sq": np.zeros_like(param.data),
-                    }
-
-                state = self.state[param_id]
-                state["step"] += 1
-
-                state["sum_sq"] += grad ** 2
-
-                clr = lr / (1 + (state["step"] - 1) * lr_decay)
-                std = np.sqrt(state["sum_sq"]) + eps
-                param.data -= clr * grad / std
+                if has_torch() and isinstance(param.data, torch.Tensor):
+                    with torch.no_grad():
+                        grad = param.data.grad
+                        if grad is None:
+                            continue
+                        if weight_decay != 0.0:
+                            grad = grad + weight_decay * param.data
+                        param_id = id(param)
+                        if param_id not in self.state:
+                            self.state[param_id] = {"step": 0, "sum_sq": torch.zeros_like(param.data)}
+                        state = self.state[param_id]
+                        state["step"] += 1
+                        state["sum_sq"] += grad ** 2
+                        clr = lr / (1 + (state["step"] - 1) * lr_decay)
+                        std = state["sum_sq"].sqrt().add_(eps)
+                        param.data -= clr * grad / std
+                else:
+                    if param.grad is None:
+                        continue
+                    grad = param.grad.data.copy()
+                    if weight_decay != 0.0:
+                        grad = grad + weight_decay * param.data
+                    param_id = id(param)
+                    if param_id not in self.state:
+                        self.state[param_id] = {"step": 0, "sum_sq": np.zeros_like(param.data)}
+                    state = self.state[param_id]
+                    state["step"] += 1
+                    state["sum_sq"] += grad ** 2
+                    clr = lr / (1 + (state["step"] - 1) * lr_decay)
+                    std = np.sqrt(state["sum_sq"]) + eps
+                    param.data -= clr * grad / std
 
 
 class _LRScheduler:

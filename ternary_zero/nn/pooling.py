@@ -5,6 +5,11 @@ from typing import Union, Tuple
 
 from .module import Module
 from ..tensor import Tensor
+from .._backend import has_torch
+
+if has_torch():
+    import torch
+    import torch.nn.functional as torchF
 
 
 def _pair(x: Union[int, Tuple[int, int]]) -> Tuple[int, int]:
@@ -26,6 +31,15 @@ class MaxPool2d(Module):
         self.padding = _pair(padding)
 
     def forward(self, input: Tensor) -> Tensor:
+        if has_torch() and isinstance(input.data, torch.Tensor):
+            output = torchF.max_pool2d(
+                input.data,
+                kernel_size=self.kernel_size,
+                stride=self.stride,
+                padding=self.padding,
+            )
+            return Tensor(output)
+
         x = input.data
         kh, kw = self.kernel_size
         stride_h, stride_w = self.stride
@@ -76,6 +90,15 @@ class AvgPool2d(Module):
         self.padding = _pair(padding)
 
     def forward(self, input: Tensor) -> Tensor:
+        if has_torch() and isinstance(input.data, torch.Tensor):
+            output = torchF.avg_pool2d(
+                input.data,
+                kernel_size=self.kernel_size,
+                stride=self.stride,
+                padding=self.padding,
+            )
+            return Tensor(output)
+
         x = input.data
         kh, kw = self.kernel_size
         stride_h, stride_w = self.stride
@@ -118,6 +141,10 @@ class AdaptiveAvgPool2d(Module):
         self.output_size = _pair(output_size)
 
     def forward(self, input: Tensor) -> Tensor:
+        if has_torch() and isinstance(input.data, torch.Tensor):
+            output = torchF.adaptive_avg_pool2d(input.data, self.output_size)
+            return Tensor(output)
+
         x = input.data
         batch, channels, h, w = x.shape
         out_h, out_w = self.output_size
@@ -146,6 +173,8 @@ class AdaptiveAvgPool2d(Module):
 
 class GlobalAvgPool2d(Module):
     def forward(self, input: Tensor) -> Tensor:
+        if has_torch() and isinstance(input.data, torch.Tensor):
+            return Tensor(torch.mean(input.data, dim=(2, 3)))
         x = input.data
         return Tensor(np.mean(x, axis=(2, 3), keepdims=False).astype(np.float32))
 
