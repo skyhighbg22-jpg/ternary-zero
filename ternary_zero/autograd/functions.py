@@ -632,9 +632,9 @@ class TernaryQuantizeSTE(Function):
             mask_pos = flat > threshold
             mask_neg = flat < -threshold
 
-            ternary = torch.where(mask_pos, torch.tensor(1, device=flat.device, dtype=torch.int8),
-                         torch.where(mask_neg, torch.tensor(-1, device=flat.device, dtype=torch.int8),
-                         torch.tensor(0, device=flat.device, dtype=torch.int8)))
+            ternary = torch.where(mask_pos, torch.tensor(1.0, device=flat.device, dtype=torch.float32),
+                         torch.where(mask_neg, torch.tensor(-1.0, device=flat.device, dtype=torch.float32),
+                         torch.tensor(0.0, device=flat.device, dtype=torch.float32)))
 
             non_zero = torch.abs(flat[mask_pos | mask_neg])
             scale = torch.mean(non_zero) if non_zero.numel() > 0 else torch.tensor(1.0, device=flat.device)
@@ -671,9 +671,9 @@ class TernaryQuantizeSTE(Function):
             threshold = alpha * mean_abs
             mask_pos = flat > threshold
             mask_neg = flat < -threshold
-            ternary = torch.where(mask_pos, torch.tensor(1, device=flat.device, dtype=torch.int8),
-                         torch.where(mask_neg, torch.tensor(-1, device=flat.device, dtype=torch.int8),
-                         torch.tensor(0, device=flat.device, dtype=torch.int8)))
+            ternary = torch.where(mask_pos, torch.tensor(1.0, device=flat.device, dtype=torch.float32),
+                         torch.where(mask_neg, torch.tensor(-1.0, device=flat.device, dtype=torch.float32),
+                         torch.tensor(0.0, device=flat.device, dtype=torch.float32)))
             non_zero = torch.abs(flat[mask_pos | mask_neg])
             scale = torch.mean(non_zero) if non_zero.numel() > 0 else torch.tensor(1.0, device=flat.device)
             return ternary.reshape(weights.shape), scale.float()

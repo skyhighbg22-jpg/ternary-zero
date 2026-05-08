@@ -19,7 +19,7 @@ class Linear(Module):
         self.in_features = in_features
         self.out_features = out_features
 
-        w_data = np.random.randn(out_features, in_features).astype(np.float32) * np.sqrt(2.0 / in_features)
+        w_data = (np.random.randn(out_features, in_features) * np.sqrt(2.0 / in_features)).astype(np.float32)
         self.weight = Parameter(w_data)
         if bias:
             self.bias = Parameter(np.zeros(out_features, dtype=np.float32))
@@ -52,7 +52,7 @@ class BitLinear(Module):
         self.out_features = out_features
         self.alpha = alpha
 
-        w_data = np.random.randn(out_features, in_features).astype(np.float32) * np.sqrt(2.0 / in_features)
+        w_data = (np.random.randn(out_features, in_features) * np.sqrt(2.0 / in_features)).astype(np.float32)
         self.weight = Parameter(w_data)
         if bias:
             self.bias = Parameter(np.zeros(out_features, dtype=np.float32))
@@ -69,7 +69,7 @@ class BitLinear(Module):
         )
         tw = ternary.data
         if has_torch() and isinstance(tw, torch.Tensor):
-            tw = tw.cpu().numpy()
+            tw = tw.detach().cpu().numpy()
         self._ternary_weight = tw.reshape(self.weight.shape).astype(np.int8)
         if isinstance(scale, Tensor):
             scale_val = scale.data
