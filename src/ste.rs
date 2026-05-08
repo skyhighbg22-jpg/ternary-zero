@@ -1,3 +1,4 @@
+use crate::error::TernaryError;
 use half::f16;
 
 // =====================================================================
@@ -25,17 +26,18 @@ use half::f16;
 /// (ternary_weights, scale_factor)
 /// - ternary_weights: Vec<i8> of {-1, 0, 1}
 /// - scale_factor: the quantization scale for dequantization
-pub fn ternary_quantize_ste(weights: &[f16], alpha: f32) -> (Vec<i8>, f32) {
-    assert!((0.0..=1.0).contains(&alpha), "alpha must be in [0, 1], got {}", alpha);
+pub fn ternary_quantize_ste(weights: &[f16], alpha: f32) -> Result<(Vec<i8>, f32), TernaryError> {
+    if !(0.0..=1.0).contains(&alpha) {
+        return Err(TernaryError::Validation {
+            message: format!("alpha must be in [0, 1], got {}", alpha),
+        });
+    }
 
-    // Compute mean absolute value
     let abs_sum: f32 = weights.iter().map(|w| w.to_f32().abs()).sum();
     let mean_abs = abs_sum / weights.len() as f32;
 
-    // Threshold
     let threshold = alpha * mean_abs;
 
-    // Compute scale: mean of |w| where |w| > threshold (non-zero ternary weights)
     let mut scale_sum = 0.0f32;
     let mut scale_count = 0usize;
     let ternary: Vec<i8> = weights
@@ -59,7 +61,7 @@ pub fn ternary_quantize_ste(weights: &[f16], alpha: f32) -> (Vec<i8>, f32) {
         1.0
     };
 
-    (ternary, scale)
+    Ok((ternary, scale))
 }
 
 /// Quantize with a fixed threshold (useful for inference).
@@ -91,25 +93,26 @@ pub fn ternary_quantize_fixed(weights: &[f16], threshold: f32) -> Vec<i8> {
 ///
 /// For the ternary case with scaling:
 ///   dL/dw_raw = dL/dq * scale * 1_{|w_raw/scale| <= 1}
-///
-/// # Arguments
-/// * `grad_output` - Gradient of loss w.r.t. output, shape [M]
-/// * `activations` - Input activations, shape [N]
-/// * `raw_weights` - Original FP16 weights (pre-quantization), shape [M*N]
-/// * `scale`       - Quantization scale factor
-///
-/// # Returns
-/// Gradient w.r.t. raw weights, shape [M*N]
 pub fn ste_backward_weights(
     grad_output: &[f16],
     activations: &[f16],
     raw_weights: &[f16],
     scale: f32,
-) -> Vec<f16> {
+) -> Result<Vec<f16>, TernaryError> {
     let m = grad_output.len();
     let n = activations.len();
-    assert_eq!(raw_weights.len(), m * n);
-    assert!(scale > 0.0, "scale must be positive, got {}", scale);
+    if raw_weights.len() != m * n {
+        return Err(TernaryError::DimensionMismatch {
+            expected: m * n,
+            actual: raw_weights.len(),
+            context: "ste_backward_weights".into(),
+        });
+    }
+    if scale <= 0.0 {
+        return Err(TernaryError::Validation {
+            message: format!("scale must be positive, got {}", scale),
+        });
+    }
 
     let mut grad_weights = Vec::with_capacity(m * n);
 
@@ -130,27 +133,29 @@ pub fn ste_backward_weights(
         }
     }
 
-    grad_weights
+    Ok(grad_weights)
 }
 
 /// Compute gradient with respect to activations using STE.
-///
-/// # Arguments
-/// * `grad_output` - Gradient of loss w.r.t. output, shape [M]
-/// * `ternary_weights` - Quantized ternary weights, shape [M*N]
-/// * `scale` - Quantization scale factor
-///
-/// # Returns
-/// Gradient w.r.t. activations, shape [N]
 pub fn ste_backward_activations(
     grad_output: &[f16],
     ternary_weights: &[i8],
     scale: f32,
-) -> Vec<f16> {
+) -> Result<Vec<f16>, TernaryError> {
     let m = grad_output.len();
-    assert!(m > 0, "grad_output must not be empty");
+    if m == 0 {
+        return Err(TernaryError::Validation {
+            message: "grad_output must not be empty".into(),
+        });
+    }
     let n = ternary_weights.len() / m;
-    assert_eq!(ternary_weights.len(), m * n);
+    if ternary_weights.len() != m * n {
+        return Err(TernaryError::DimensionMismatch {
+            expected: m * n,
+            actual: ternary_weights.len(),
+            context: "ste_backward_activations".into(),
+        });
+    }
 
     let mut grad_act = vec![0.0f32; n];
 
@@ -162,7 +167,7 @@ pub fn ste_backward_activations(
         }
     }
 
-    grad_act.iter().map(|&g| f16::from_f32(g)).collect()
+    Ok(grad_act.iter().map(|&g| f16::from_f32(g)).collect())
 }
 
 // =====================================================================
@@ -196,16 +201,7 @@ mod tests {
             f16::from_f32(-0.9),
         ];
 
-        let (ternary, scale) = ternary_quantize_ste(&weights, 0.5);
-
-        // mean(|w|) = (0.8+0.7+0.1+0.05+0.6+0.9)/6 = 3.15/6 = 0.525
-        // threshold = 0.5 * 0.525 = 0.2625
-        // 0.8 > 0.2625 -> 1
-        // -0.7 > -0.2625 -> -1 (abs check: 0.7 > 0.2625)
-        // 0.1 < 0.2625 -> 0
-        // 0.05 < 0.2625 -> 0
-        // 0.6 > 0.2625 -> 1
-        // 0.9 > 0.2625 -> -1 (abs check: 0.9 > 0.2625)
+        let (ternary, scale) = ternary_quantize_ste(&weights, 0.5).unwrap();
 
         assert_eq!(ternary, vec![1, -1, 0, 0, 1, -1]);
         assert!(scale > 0.0);
@@ -213,20 +209,23 @@ mod tests {
 
     #[test]
     fn test_ternary_quantize_all_zeros() {
-        // With alpha=0.5, threshold = 0.5 * mean(|w|).
-        // Since all weights are non-zero and similar magnitude,
-        // they all exceed the threshold and become ±1.
-        // This verifies the algorithm handles near-uniform small weights.
         let weights: Vec<f16> = vec![
             f16::from_f32(0.01),
             f16::from_f32(-0.01),
             f16::from_f32(0.005),
         ];
 
-        let (ternary, _scale) = ternary_quantize_ste(&weights, 0.5);
-        // mean(|w|) = 0.00833, threshold = 0.00417
-        // 0.01 > 0.00417 -> 1, -0.01 < -0.00417 -> -1, 0.005 > 0.00417 -> 1
+        let (ternary, _scale) = ternary_quantize_ste(&weights, 0.5).unwrap();
         assert_eq!(ternary, vec![1, -1, 1]);
+    }
+
+    #[test]
+    fn test_invalid_alpha() {
+        let weights = vec![f16::from_f32(0.5)];
+        assert!(ternary_quantize_ste(&weights, -0.1).is_err());
+        assert!(ternary_quantize_ste(&weights, 1.5).is_err());
+        assert!(ternary_quantize_ste(&weights, 0.0).is_ok());
+        assert!(ternary_quantize_ste(&weights, 1.0).is_ok());
     }
 
     #[test]
@@ -254,11 +253,32 @@ mod tests {
         let raw_weights: Vec<f16> = vec![f16::from_f32(0.4), f16::from_f32(0.2)];
         let scale = 0.5;
 
-        let grad = ste_backward_weights(&grad_output, &activations, &raw_weights, scale);
+        let grad = ste_backward_weights(&grad_output, &activations, &raw_weights, scale).unwrap();
 
-        // w/scale: 0.4/0.5=0.8 <=1 -> grad = 1.0*0.5 = 0.5
-        // w/scale: 0.2/0.5=0.4 <=1 -> grad = 1.0*0.3 = 0.3
         assert!((grad[0].to_f32() - 0.5).abs() < 1e-3);
         assert!((grad[1].to_f32() - 0.3).abs() < 1e-3);
+    }
+
+    #[test]
+    fn test_ste_backward_invalid_scale() {
+        let go = vec![f16::from_f32(1.0)];
+        let act = vec![f16::from_f32(0.5)];
+        let w = vec![f16::from_f32(0.4)];
+        assert!(ste_backward_weights(&go, &act, &w, 0.0).is_err());
+        assert!(ste_backward_weights(&go, &act, &w, -1.0).is_err());
+    }
+
+    #[test]
+    fn test_ste_backward_activations_empty() {
+        let go: Vec<f16> = vec![];
+        let tw = vec![1i8, 0, -1];
+        assert!(ste_backward_activations(&go, &tw, 1.0).is_err());
+    }
+
+    #[test]
+    fn test_ste_backward_dimension_mismatch() {
+        let go = vec![f16::from_f32(1.0), f16::from_f32(0.5)]; // m=2
+        let tw = vec![1i8, 0, -1]; // m*n should be 2*n, but 3 is not even
+        assert!(ste_backward_activations(&go, &tw, 1.0).is_err());
     }
 }

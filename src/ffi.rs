@@ -101,6 +101,14 @@ pub struct CUstream_st {
 
 pub type cudaStream_t = *mut CUstream_st;
 
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct CUevent_st {
+    _private: [u8; 0],
+}
+
+pub type cudaEvent_t = *mut CUevent_st;
+
 // Copy kind constants
 pub const CUDA_MEMCPY_HOST_TO_DEVICE: c_int = 1;
 pub const CUDA_MEMCPY_DEVICE_TO_HOST: c_int = 2;
@@ -160,6 +168,27 @@ extern "C" {
     pub fn cudaGetLastError() -> CudaError;
     pub fn cudaPeekAtLastError() -> CudaError;
     pub fn cudaGetErrorString(error: CudaError) -> *const i8;
+
+    // Asynchronous memory copy (stream-ordered, non-blocking on host)
+    pub fn cudaMemcpyAsync(
+        dst: *mut c_void,
+        src: *const c_void,
+        count: usize,
+        kind: c_int,
+        stream: cudaStream_t,
+    ) -> CudaError;
+
+    // Page-locked host memory for async DMA transfers
+    pub fn cudaMallocHost(dev_ptr: *mut *mut c_void, size: usize) -> CudaError;
+    pub fn cudaFreeHost(dev_ptr: *mut c_void) -> CudaError;
+
+    // Event-based stream synchronization
+    pub fn cudaEventCreate(event: *mut cudaEvent_t) -> CudaError;
+    pub fn cudaEventDestroy(event: cudaEvent_t) -> CudaError;
+    pub fn cudaEventRecord(event: cudaEvent_t, stream: cudaStream_t) -> CudaError;
+    pub fn cudaEventSynchronize(event: cudaEvent_t) -> CudaError;
+    pub fn cudaEventQuery(event: cudaEvent_t) -> CudaError;
+    pub fn cudaEventElapsedTime(ms: *mut f32, start: cudaEvent_t, end: cudaEvent_t) -> CudaError;
 }
 
 // =====================================================================

@@ -1,10 +1,18 @@
+pub mod error;
 pub mod ffi;
 pub mod bitlinear;
 pub mod ste;
 
-pub use bitlinear::{BitLinear, GpuBuffer, CudaStream, pack_ternary_to_u32, unpack_u32_to_ternary};
-pub use ste::{ternary_quantize_ste, ternary_quantize_fixed, ste_backward_weights, ste_backward_activations, dequantize_ternary};
+pub use bitlinear::{
+    BitLinear, CudaEvent, CudaMemoryPool, CudaStream, GpuBuffer, PendingResult,
+    PinnedHostBuffer, PooledGpuBuffer, pack_ternary_to_u32, unpack_u32_to_ternary,
+};
+pub use error::TernaryError;
 pub use ffi::{CudaError, cuda_error_string};
+pub use ste::{
+    dequantize_ternary, ste_backward_activations, ste_backward_weights,
+    ternary_quantize_fixed, ternary_quantize_ste,
+};
 
 use pyo3::prelude::*;
 use pyo3::exceptions::PyRuntimeError;
@@ -28,7 +36,7 @@ fn pack_ternary_to_u32_py<'py>(
     n: usize,
 ) -> PyResult<Bound<'py, PyArray1<u32>>> {
     let w = weights.as_slice()?;
-    let packed = pack_ternary_to_u32(w, n);
+    let packed = pack_ternary_to_u32(w, n)?;
     Ok(PyArray1::from_vec_bound(py, packed))
 }
 
@@ -39,7 +47,7 @@ fn unpack_u32_to_ternary_py<'py>(
     n: usize,
 ) -> PyResult<Bound<'py, PyArray1<i8>>> {
     let p = packed.as_slice()?;
-    let weights = unpack_u32_to_ternary(p, n);
+    let weights = unpack_u32_to_ternary(p, n)?;
     Ok(PyArray1::from_vec_bound(py, weights))
 }
 
@@ -51,7 +59,7 @@ fn ternary_quantize_ste_py<'py>(
 ) -> PyResult<(Bound<'py, PyArray1<i8>>, f32)> {
     let w_f32 = weights.as_slice()?;
     let w_f16: Vec<half::f16> = w_f32.iter().map(|&v| half::f16::from_f32(v)).collect();
-    let (ternary, scale) = ternary_quantize_ste(&w_f16, alpha);
+    let (ternary, scale) = ternary_quantize_ste(&w_f16, alpha)?;
     Ok((PyArray1::from_vec_bound(py, ternary), scale))
 }
 
@@ -90,7 +98,7 @@ fn ste_backward_weights_py<'py>(
     let go: Vec<half::f16> = grad_output.as_slice()?.iter().map(|&v| half::f16::from_f32(v)).collect();
     let act: Vec<half::f16> = activations.as_slice()?.iter().map(|&v| half::f16::from_f32(v)).collect();
     let rw: Vec<half::f16> = raw_weights.as_slice()?.iter().map(|&v| half::f16::from_f32(v)).collect();
-    let grad_f16 = ste_backward_weights(&go, &act, &rw, scale);
+    let grad_f16 = ste_backward_weights(&go, &act, &rw, scale)?;
     let grad_f32: Vec<f32> = grad_f16.iter().map(|h| h.to_f32()).collect();
     Ok(PyArray1::from_vec_bound(py, grad_f32))
 }
@@ -104,7 +112,7 @@ fn ste_backward_activations_py<'py>(
 ) -> PyResult<Bound<'py, PyArray1<f32>>> {
     let go: Vec<half::f16> = grad_output.as_slice()?.iter().map(|&v| half::f16::from_f32(v)).collect();
     let tw = ternary_weights.as_slice()?;
-    let grad_f16 = ste_backward_activations(&go, tw, scale);
+    let grad_f16 = ste_backward_activations(&go, tw, scale)?;
     let grad_f32: Vec<f32> = grad_f16.iter().map(|h| h.to_f32()).collect();
     Ok(PyArray1::from_vec_bound(py, grad_f32))
 }
@@ -119,8 +127,16 @@ fn ternary_gemv_cpu<'py>(
 ) -> PyResult<Bound<'py, PyArray1<f32>>> {
     let w = weights.as_slice()?;
     let act = activations.as_slice()?;
-    assert_eq!(w.len(), m * n, "weights length must be M*N");
-    assert_eq!(act.len(), n, "activations length must be N");
+    if w.len() != m * n {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            format!("weights length {} != M*N = {}", w.len(), m * n),
+        ));
+    }
+    if act.len() != n {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            format!("activations length {} != N = {}", act.len(), n),
+        ));
+    }
 
     let mut output = vec![0.0f32; m];
     for row in 0..m {
@@ -143,7 +159,11 @@ fn ternary_gemm_cpu<'py>(
     let act = activations.as_array();
     let m = w.shape()[0];
     let k = w.shape()[1];
-    assert_eq!(act.shape()[0], k, "inner dimensions must match");
+    if act.shape()[0] != k {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            format!("inner dimensions must match: weights K={} vs activations K={}", k, act.shape()[0]),
+        ));
+    }
     let n = act.shape()[1];
 
     let mut result = Array2::<f32>::zeros((m, n));
@@ -161,11 +181,8 @@ fn ternary_gemm_cpu<'py>(
 
 #[pyfunction]
 fn has_cuda() -> bool {
-    std::panic::catch_unwind(|| {
-        let _result = unsafe { ffi::cudaGetLastError() };
-        true
-    })
-    .unwrap_or(false)
+    let err = unsafe { ffi::cudaGetLastError() };
+    err == CudaError::Success || err == CudaError::InitializationError
 }
 
 #[pymodule]
