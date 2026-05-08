@@ -26,7 +26,8 @@ impl<T: Copy> GpuBuffer<T> {
         }
 
         let mut dev_ptr: *mut c_void = ptr::null_mut();
-        let size = len * std::mem::size_of::<T>();
+        let elem_size = std::mem::size_of::<T>();
+        let size = len.checked_mul(elem_size).expect("allocation size overflow");
 
         let err = unsafe { ffi::cudaMalloc(&mut dev_ptr as *mut *mut c_void, size) };
         err.to_result()?;
@@ -51,7 +52,7 @@ impl<T: Copy> GpuBuffer<T> {
             return Ok(());
         }
 
-        let size = self.len * std::mem::size_of::<T>();
+        let size = self.len.checked_mul(std::mem::size_of::<T>()).expect("copy size overflow");
         let err = unsafe {
             ffi::cudaMemcpy(
                 self.ptr as *mut c_void,
@@ -77,7 +78,7 @@ impl<T: Copy> GpuBuffer<T> {
             return Ok(());
         }
 
-        let size = self.len * std::mem::size_of::<T>();
+        let size = self.len.checked_mul(std::mem::size_of::<T>()).expect("copy size overflow");
         let err = unsafe {
             ffi::cudaMemcpy(
                 data.as_mut_ptr() as *mut c_void,
@@ -111,7 +112,7 @@ impl<T: Copy> GpuBuffer<T> {
 
     /// Size in bytes
     pub fn byte_size(&self) -> usize {
-        self.len * std::mem::size_of::<T>()
+        self.len.checked_mul(std::mem::size_of::<T>()).expect("byte_size overflow")
     }
 }
 
@@ -396,12 +397,10 @@ mod tests {
     fn rand_bit() -> bool {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
-        static mut COUNTER: u64 = 0;
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
         let mut h = DefaultHasher::new();
-        unsafe {
-            COUNTER += 1;
-            COUNTER.hash(&mut h);
-        }
+        COUNTER.fetch_add(1, Ordering::Relaxed).hash(&mut h);
         h.finish() % 2 == 0
     }
 }

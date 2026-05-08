@@ -247,3 +247,194 @@ class RMSprop(Optimizer):
                     update = buf
 
                 param.data -= lr * update
+
+
+class Adagrad(Optimizer):
+    def __init__(
+        self,
+        params: Iterable[Parameter],
+        lr: float = 0.01,
+        lr_decay: float = 0.0,
+        eps: float = 1e-10,
+        weight_decay: float = 0.0,
+    ):
+        defaults = dict(lr=lr, lr_decay=lr_decay, eps=eps, weight_decay=weight_decay)
+        super().__init__(params, defaults)
+
+    def step(self):
+        for group in self.param_groups:
+            lr = group["lr"]
+            lr_decay = group["lr_decay"]
+            eps = group["eps"]
+            weight_decay = group["weight_decay"]
+
+            for param in group["params"]:
+                if param.grad is None:
+                    continue
+
+                grad = param.grad.data.copy()
+
+                if weight_decay != 0.0:
+                    grad = grad + weight_decay * param.data
+
+                param_id = id(param)
+                if param_id not in self.state:
+                    self.state[param_id] = {
+                        "step": 0,
+                        "sum_sq": np.zeros_like(param.data),
+                    }
+
+                state = self.state[param_id]
+                state["step"] += 1
+
+                state["sum_sq"] += grad ** 2
+
+                clr = lr / (1 + (state["step"] - 1) * lr_decay)
+                std = np.sqrt(state["sum_sq"]) + eps
+                param.data -= clr * grad / std
+
+
+class _LRScheduler:
+    def __init__(self, optimizer: Optimizer, last_epoch: int = -1):
+        self.optimizer = optimizer
+        self.last_epoch = last_epoch
+        self.base_lrs = [group["lr"] for group in optimizer.param_groups]
+        self.step()
+
+    def get_lr(self):
+        raise NotImplementedError
+
+    def step(self):
+        self.last_epoch += 1
+        new_lrs = self.get_lr()
+        for group, lr in zip(self.optimizer.param_groups, new_lrs):
+            group["lr"] = lr
+
+
+class StepLR(_LRScheduler):
+    def __init__(
+        self,
+        optimizer: Optimizer,
+        step_size: int,
+        gamma: float = 0.1,
+        last_epoch: int = -1,
+    ):
+        self.step_size = step_size
+        self.gamma = gamma
+        super().__init__(optimizer, last_epoch)
+
+    def get_lr(self):
+        factor = self.gamma ** (self.last_epoch // self.step_size)
+        return [base_lr * factor for base_lr in self.base_lrs]
+
+
+class ExponentialLR(_LRScheduler):
+    def __init__(
+        self,
+        optimizer: Optimizer,
+        gamma: float = 0.9,
+        last_epoch: int = -1,
+    ):
+        self.gamma = gamma
+        super().__init__(optimizer, last_epoch)
+
+    def get_lr(self):
+        return [base_lr * self.gamma ** self.last_epoch for base_lr in self.base_lrs]
+
+
+class CosineAnnealingLR(_LRScheduler):
+    def __init__(
+        self,
+        optimizer: Optimizer,
+        T_max: int,
+        eta_min: float = 0.0,
+        last_epoch: int = -1,
+    ):
+        self.T_max = T_max
+        self.eta_min = eta_min
+        super().__init__(optimizer, last_epoch)
+
+    def get_lr(self):
+        if self.last_epoch == 0:
+            return list(self.base_lrs)
+        return [
+            self.eta_min + (base_lr - self.eta_min)
+            * (1 + np.cos(np.pi * self.last_epoch / self.T_max))
+            / 2
+            for base_lr in self.base_lrs
+        ]
+
+
+class LinearLR(_LRScheduler):
+    def __init__(
+        self,
+        optimizer: Optimizer,
+        start_factor: float = 1.0 / 3,
+        end_factor: float = 1.0,
+        total_iters: int = 5,
+        last_epoch: int = -1,
+    ):
+        self.start_factor = start_factor
+        self.end_factor = end_factor
+        self.total_iters = total_iters
+        super().__init__(optimizer, last_epoch)
+
+    def get_lr(self):
+        if self.last_epoch == 0:
+            return [base_lr * self.start_factor for base_lr in self.base_lrs]
+        if self.last_epoch > self.total_iters:
+            return [base_lr * self.end_factor for base_lr in self.base_lrs]
+        return [
+            base_lr * (
+                self.start_factor
+                + (self.end_factor - self.start_factor) * self.last_epoch / self.total_iters
+            )
+            for base_lr in self.base_lrs
+        ]
+
+
+class ReduceLROnPlateau:
+    def __init__(
+        self,
+        optimizer: Optimizer,
+        mode: str = "min",
+        factor: float = 0.1,
+        patience: int = 10,
+        threshold: float = 1e-4,
+        min_lr: float = 0.0,
+    ):
+        self.optimizer = optimizer
+        self.mode = mode
+        self.factor = factor
+        self.patience = patience
+        self.threshold = threshold
+        self.min_lr = min_lr
+        self.best = None
+        self.num_bad_epochs = 0
+        self.last_epoch = 0
+
+        if mode == "min":
+            self.is_better = lambda a, best: a < best - threshold
+        else:
+            self.is_better = lambda a, best: a > best + threshold
+
+    def step(self, metrics: float):
+        self.last_epoch += 1
+        if self.best is None:
+            self.best = metrics
+            return
+
+        if self.is_better(metrics, self.best):
+            self.best = metrics
+            self.num_bad_epochs = 0
+        else:
+            self.num_bad_epochs += 1
+
+        if self.num_bad_epochs >= self.patience:
+            self._reduce_lr()
+            self.num_bad_epochs = 0
+
+    def _reduce_lr(self):
+        for group in self.optimizer.param_groups:
+            new_lr = max(group["lr"] * self.factor, self.min_lr)
+            group["lr"] = new_lr

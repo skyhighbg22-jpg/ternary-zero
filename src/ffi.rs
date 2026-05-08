@@ -1,8 +1,7 @@
-use std::os::raw::{c_int, c_void};
+#![allow(non_camel_case_types)]
 
-// =====================================================================
-// CUDA Runtime FFI Bindings (Minimal, Manual Lifecycle)
-// =====================================================================
+use std::fmt;
+use std::os::raw::{c_int, c_void};
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,7 +47,51 @@ impl CudaError {
             Err(self)
         }
     }
+
+    pub fn description(&self) -> &str {
+        match self {
+            CudaError::Success => "no error",
+            CudaError::InvalidValue => "invalid argument",
+            CudaError::MemoryAllocation => "out of memory",
+            CudaError::InitializationError => "initialization error",
+            CudaError::CudartUnloading => "CUDA runtime shutting down",
+            CudaError::ProfilerDisabled => "profiler disabled",
+            CudaError::ProfilerNotInitialized => "profiler not initialized",
+            CudaError::ProfilerAlreadyStarted => "profiler already started",
+            CudaError::ProfilerAlreadyStopped => "profiler already stopped",
+            CudaError::InvalidDevice => "invalid device ordinal",
+            CudaError::InvalidImage => "invalid kernel image",
+            CudaError::InvalidContext => "invalid device context",
+            CudaError::ContextAlreadyCurrent => "context already current",
+            CudaError::MapFailed => "mapping failed",
+            CudaError::UnmapFailed => "unmapping failed",
+            CudaError::ArrayIsMapped => "array is mapped",
+            CudaError::AlreadyMapped => "resource already mapped",
+            CudaError::NoBinaryForGpu => "no binary for GPU",
+            CudaError::AlreadyAcquired => "resource already acquired",
+            CudaError::NotMapped => "resource not mapped",
+            CudaError::NotMappedAsArray => "not mapped as array",
+            CudaError::NotMappedAsPointer => "not mapped as pointer",
+            CudaError::EccUncorrectable => "uncorrectable ECC error",
+            CudaError::UnsupportedLimit => "unsupported limit",
+            CudaError::ContextAlreadyInUse => "context already in use",
+            CudaError::PeerAccessUnsupported => "peer access unsupported",
+            CudaError::InvalidPtx => "invalid PTX",
+            CudaError::InvalidGraphicsContext => "invalid graphics context",
+            CudaError::StartupFailure => "CUDA driver startup failure",
+            CudaError::ApiFailureBase => "API failure base",
+            CudaError::Unknown => "unknown error",
+        }
+    }
 }
+
+impl fmt::Display for CudaError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "CUDA error {:?} (code {}): {}", self, *self as i32, self.description())
+    }
+}
+
+impl std::error::Error for CudaError {}
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -106,7 +149,6 @@ extern "C" {
         count: usize,
         kind: c_int,
     ) -> CudaError;
-    pub fn cudaMemset(dev_ptr: *mut c_void, value: c_int, count: usize) -> CudaError;
     pub fn cudaStreamCreate(stream: *mut cudaStream_t) -> CudaError;
     pub fn cudaStreamDestroy(stream: cudaStream_t) -> CudaError;
     pub fn cudaStreamSynchronize(stream: cudaStream_t) -> CudaError;

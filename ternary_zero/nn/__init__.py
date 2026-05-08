@@ -5,7 +5,10 @@ from .activation import ReLU, GELU, Sigmoid, Tanh, Softmax, LogSoftmax
 from .normalization import LayerNorm, BatchNorm1d
 from .dropout import Dropout
 from .loss import CrossEntropyLoss, MSELoss, L1Loss
-from .container import Sequential
+from .container import Sequential, ModuleList, ModuleDict, Flatten
+from .convolution import Conv1d, Conv2d
+from .pooling import MaxPool2d, AvgPool2d, AdaptiveAvgPool2d, GlobalAvgPool2d
+from .embedding import Embedding
 
 __all__ = [
     "Module",
@@ -26,4 +29,14 @@ __all__ = [
     "MSELoss",
     "L1Loss",
     "Sequential",
+    "ModuleList",
+    "ModuleDict",
+    "Flatten",
+    "Conv1d",
+    "Conv2d",
+    "MaxPool2d",
+    "AvgPool2d",
+    "AdaptiveAvgPool2d",
+    "GlobalAvgPool2d",
+    "Embedding",
 ]

@@ -298,5 +298,246 @@ class TestQuantize:
         assert np.allclose(d.data, [0.5, 0.0, -0.5, 0.5])
 
 
+class TestConv:
+    def test_conv2d_forward(self):
+        layer = tz.nn.Conv2d(3, 8, kernel_size=3, padding=1)
+        x = randn(1, 3, 4, 4)
+        y = layer(x)
+        assert y.shape == (1, 8, 4, 4)
+
+    def test_conv2d_no_padding(self):
+        layer = tz.nn.Conv2d(1, 1, kernel_size=3)
+        x = randn(1, 1, 5, 5)
+        y = layer(x)
+        assert y.shape == (1, 1, 3, 3)
+
+    def test_conv2d_stride(self):
+        layer = tz.nn.Conv2d(1, 1, kernel_size=3, stride=2)
+        x = randn(1, 1, 6, 6)
+        y = layer(x)
+        assert y.shape == (1, 1, 2, 2)
+
+    def test_conv2d_params(self):
+        layer = tz.nn.Conv2d(3, 16, 3)
+        params = list(layer.parameters())
+        assert len(params) == 2
+
+    def test_conv1d_forward(self):
+        layer = tz.nn.Conv1d(3, 8, kernel_size=3, padding=1)
+        x = randn(1, 3, 10)
+        y = layer(x)
+        assert y.shape == (1, 8, 10)
+
+    def test_conv1d_no_padding(self):
+        layer = tz.nn.Conv1d(1, 1, kernel_size=3)
+        x = randn(1, 1, 8)
+        y = layer(x)
+        assert y.shape == (1, 1, 6)
+
+
+class TestPooling:
+    def test_maxpool2d(self):
+        layer = tz.nn.MaxPool2d(kernel_size=2)
+        x = tensor([[[[1.0, 2.0, 3.0, 4.0],
+                       [5.0, 6.0, 7.0, 8.0],
+                       [9.0, 10.0, 11.0, 12.0],
+                       [13.0, 14.0, 15.0, 16.0]]]])
+        y = layer(x)
+        assert y.shape == (1, 1, 2, 2)
+        assert np.isclose(y.data[0, 0, 0, 0], 6.0)
+        assert np.isclose(y.data[0, 0, 1, 1], 16.0)
+
+    def test_maxpool2d_stride(self):
+        layer = tz.nn.MaxPool2d(kernel_size=2, stride=1)
+        x = randn(1, 1, 4, 4)
+        y = layer(x)
+        assert y.shape == (1, 1, 3, 3)
+
+    def test_avgpool2d(self):
+        layer = tz.nn.AvgPool2d(kernel_size=2)
+        x = tensor([[[[1.0, 2.0, 3.0, 4.0],
+                       [5.0, 6.0, 7.0, 8.0],
+                       [9.0, 10.0, 11.0, 12.0],
+                       [13.0, 14.0, 15.0, 16.0]]]])
+        y = layer(x)
+        assert y.shape == (1, 1, 2, 2)
+        assert np.isclose(y.data[0, 0, 0, 0], 3.5)
+
+    def test_adaptive_avg_pool(self):
+        layer = tz.nn.AdaptiveAvgPool2d(1)
+        x = randn(1, 3, 8, 8)
+        y = layer(x)
+        assert y.shape == (1, 3, 1, 1)
+
+    def test_adaptive_avg_pool_2x2(self):
+        layer = tz.nn.AdaptiveAvgPool2d(2)
+        x = randn(1, 3, 8, 8)
+        y = layer(x)
+        assert y.shape == (1, 3, 2, 2)
+
+    def test_global_avg_pool(self):
+        layer = tz.nn.GlobalAvgPool2d()
+        x = randn(1, 3, 4, 4)
+        y = layer(x)
+        assert y.shape == (1, 3)
+
+
+class TestEmbedding:
+    def test_embedding_forward(self):
+        emb = tz.nn.Embedding(10, 4)
+        idx = tensor([0, 1, 2, 3])
+        y = emb(idx)
+        assert y.shape == (4, 4)
+
+    def test_embedding_params(self):
+        emb = tz.nn.Embedding(10, 4)
+        params = list(emb.parameters())
+        assert len(params) == 1
+        assert params[0].shape == (10, 4)
+
+    def test_embedding_padding(self):
+        emb = tz.nn.Embedding(5, 3, padding_idx=0)
+        idx = tensor([0])
+        y = emb(idx)
+        assert np.allclose(y.data, 0.0)
+
+
+class TestContainers:
+    def test_module_list(self):
+        layers = tz.nn.ModuleList([
+            tz.nn.Linear(3, 4),
+            tz.nn.ReLU(),
+            tz.nn.Linear(4, 2),
+        ])
+        assert len(layers) == 3
+
+    def test_module_list_append(self):
+        layers = tz.nn.ModuleList()
+        layers.append(tz.nn.Linear(3, 4))
+        layers.append(tz.nn.ReLU())
+        assert len(layers) == 2
+
+    def test_module_list_iter(self):
+        layers = tz.nn.ModuleList([
+            tz.nn.Linear(3, 4),
+            tz.nn.ReLU(),
+        ])
+        count = 0
+        for _ in layers:
+            count += 1
+        assert count == 2
+
+    def test_module_list_params(self):
+        layers = tz.nn.ModuleList([
+            tz.nn.Linear(3, 4),
+            tz.nn.Linear(4, 2),
+        ])
+        params = list(layers.parameters())
+        assert len(params) == 4
+
+    def test_module_dict(self):
+        modules = tz.nn.ModuleDict({
+            "fc1": tz.nn.Linear(3, 4),
+            "fc2": tz.nn.Linear(4, 2),
+        })
+        assert len(modules) == 2
+        assert "fc1" in modules
+
+    def test_module_dict_setitem(self):
+        modules = tz.nn.ModuleDict()
+        modules["fc"] = tz.nn.Linear(3, 4)
+        assert len(modules) == 1
+
+    def test_flatten(self):
+        layer = tz.nn.Flatten(1)
+        x = randn(2, 3, 4)
+        y = layer(x)
+        assert y.shape == (2, 12)
+
+    def test_flatten_keep_last(self):
+        layer = tz.nn.Flatten(1, 2)
+        x = randn(2, 3, 4, 5)
+        y = layer(x)
+        assert y.shape == (2, 12, 5)
+
+
+class TestLRScheduler:
+    def test_step_lr(self):
+        x = tensor([1.0], requires_grad=True)
+        opt = tz.optim.SGD([x], lr=0.1)
+        scheduler = tz.optim.StepLR(opt, step_size=2, gamma=0.5)
+        assert np.isclose(opt.param_groups[0]["lr"], 0.1)
+        scheduler.step()
+        assert np.isclose(opt.param_groups[0]["lr"], 0.1)
+        scheduler.step()
+        assert np.isclose(opt.param_groups[0]["lr"], 0.05)
+
+    def test_exponential_lr(self):
+        x = tensor([1.0], requires_grad=True)
+        opt = tz.optim.SGD([x], lr=1.0)
+        scheduler = tz.optim.ExponentialLR(opt, gamma=0.9)
+        assert np.isclose(opt.param_groups[0]["lr"], 1.0)
+        scheduler.step()
+        assert np.isclose(opt.param_groups[0]["lr"], 0.9)
+
+    def test_cosine_annealing_lr(self):
+        x = tensor([1.0], requires_grad=True)
+        opt = tz.optim.Adam([x], lr=0.1)
+        scheduler = tz.optim.CosineAnnealingLR(opt, T_max=10, eta_min=0.0)
+        initial_lr = opt.param_groups[0]["lr"]
+        assert initial_lr > 0
+        for _ in range(10):
+            scheduler.step()
+        assert np.isclose(opt.param_groups[0]["lr"], 0.0, atol=1e-6)
+
+    def test_linear_lr(self):
+        x = tensor([1.0], requires_grad=True)
+        opt = tz.optim.SGD([x], lr=1.0)
+        scheduler = tz.optim.LinearLR(opt, start_factor=0.1, end_factor=1.0, total_iters=10)
+        assert np.isclose(opt.param_groups[0]["lr"], 0.1)
+        for _ in range(10):
+            scheduler.step()
+        assert np.isclose(opt.param_groups[0]["lr"], 1.0)
+
+    def test_reduce_lr_on_plateau(self):
+        x = tensor([1.0], requires_grad=True)
+        opt = tz.optim.SGD([x], lr=1.0)
+        scheduler = tz.optim.ReduceLROnPlateau(opt, mode="min", factor=0.1, patience=2)
+        scheduler.step(1.0)
+        assert np.isclose(opt.param_groups[0]["lr"], 1.0)
+        scheduler.step(1.0)
+        assert np.isclose(opt.param_groups[0]["lr"], 1.0)
+        scheduler.step(1.0)
+        assert np.isclose(opt.param_groups[0]["lr"], 0.1)
+
+
+class TestAdagrad:
+    def test_adagrad_step(self):
+        x = tensor([1.0, 2.0], requires_grad=True)
+        opt = tz.optim.Adagrad([x], lr=0.1)
+        y = (x * x).sum()
+        y.backward()
+        opt.step()
+        assert not np.allclose(x.data, [1.0, 2.0])
+
+
+class TestNewOptimizers:
+    def test_adamw(self):
+        x = tensor([1.0, 2.0], requires_grad=True)
+        opt = tz.optim.AdamW([x], lr=0.1)
+        y = (x * x).sum()
+        y.backward()
+        opt.step()
+        assert not np.allclose(x.data, [1.0, 2.0])
+
+    def test_rmsprop(self):
+        x = tensor([1.0, 2.0], requires_grad=True)
+        opt = tz.optim.RMSprop([x], lr=0.01)
+        y = (x * x).sum()
+        y.backward()
+        opt.step()
+        assert not np.allclose(x.data, [1.0, 2.0])
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

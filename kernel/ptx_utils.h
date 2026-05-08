@@ -170,8 +170,9 @@ __device__ __forceinline__ half2 zero_gate_accumulate_ptx(
     uint32_t neg_mask = (uint32_t)(-(int32_t)sign_bit);
 
     // Reinterpret half2 as uint32_t for bitwise operations
-    uint32_t act_bits = __half2raw(activation).x;
-    uint32_t acc_bits = __half2raw(accumulator).x;
+    unsigned short a_lo = __half_as_ushort(activation.x);
+    unsigned short a_hi = __half_as_ushort(activation.y);
+    uint32_t act_bits = ((uint32_t)a_hi << 16) | (uint32_t)a_lo;
 
     // Apply sign: if negative, XOR with sign mask to negate (FP16 sign flip)
     // For half2: sign bit is bit 15 of each 16-bit lane
@@ -183,8 +184,11 @@ __device__ __forceinline__ half2 zero_gate_accumulate_ptx(
     uint32_t gated_act;
     PTX_LOP3_LUT(gated_act, signed_act, nz_mask, 0, LUT_EXTRACT_SIGN); // a & b
 
-    // Add to accumulator
-    half2 result = __hadd2(accumulator, __raw2half2(gated_act));
+    // Reinterpret back to half2 and add to accumulator
+    half2 contribution;
+    contribution.x = __ushort_as_half((unsigned short)(gated_act & 0xFFFF));
+    contribution.y = __ushort_as_half((unsigned short)(gated_act >> 16));
+    half2 result = __hadd2(accumulator, contribution);
     return result;
 }
 

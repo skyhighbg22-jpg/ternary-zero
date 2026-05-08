@@ -109,6 +109,7 @@ pub fn ste_backward_weights(
     let m = grad_output.len();
     let n = activations.len();
     assert_eq!(raw_weights.len(), m * n);
+    assert!(scale > 0.0, "scale must be positive, got {}", scale);
 
     let mut grad_weights = Vec::with_capacity(m * n);
 
@@ -118,7 +119,6 @@ pub fn ste_backward_weights(
             let x = activations[ni].to_f32();
             let w = raw_weights[mi * n + ni].to_f32();
 
-            // STE: pass gradient through if |w/scale| <= 1, else zero
             let w_normalized = w.abs() / scale;
             let grad = if w_normalized <= 1.0 {
                 go * x
@@ -148,6 +148,7 @@ pub fn ste_backward_activations(
     scale: f32,
 ) -> Vec<f16> {
     let m = grad_output.len();
+    assert!(m > 0, "grad_output must not be empty");
     let n = ternary_weights.len() / m;
     assert_eq!(ternary_weights.len(), m * n);
 
@@ -212,7 +213,10 @@ mod tests {
 
     #[test]
     fn test_ternary_quantize_all_zeros() {
-        // All weights very small -> all become zero
+        // With alpha=0.5, threshold = 0.5 * mean(|w|).
+        // Since all weights are non-zero and similar magnitude,
+        // they all exceed the threshold and become ±1.
+        // This verifies the algorithm handles near-uniform small weights.
         let weights: Vec<f16> = vec![
             f16::from_f32(0.01),
             f16::from_f32(-0.01),
@@ -220,7 +224,9 @@ mod tests {
         ];
 
         let (ternary, _scale) = ternary_quantize_ste(&weights, 0.5);
-        assert_eq!(ternary, vec![0, 0, 0]);
+        // mean(|w|) = 0.00833, threshold = 0.00417
+        // 0.01 > 0.00417 -> 1, -0.01 < -0.00417 -> -1, 0.005 > 0.00417 -> 1
+        assert_eq!(ternary, vec![1, -1, 1]);
     }
 
     #[test]
