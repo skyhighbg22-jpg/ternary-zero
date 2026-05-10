@@ -1,7 +1,6 @@
 use crate::error::TernaryError;
 use crate::ffi::{
-    self, CUDA_MEMCPY_DEVICE_TO_HOST, CUDA_MEMCPY_HOST_TO_DEVICE,
-    cudaStream_t, cudaEvent_t,
+    self, cudaEvent_t, cudaStream_t, CUDA_MEMCPY_DEVICE_TO_HOST, CUDA_MEMCPY_HOST_TO_DEVICE,
 };
 use half::f16;
 use std::os::raw::c_void;
@@ -36,9 +35,11 @@ impl<T: Copy> GpuBuffer<T> {
 
         let mut dev_ptr: *mut c_void = ptr::null_mut();
         let elem_size = std::mem::size_of::<T>();
-        let size = len.checked_mul(elem_size).ok_or_else(|| TernaryError::Overflow {
-            context: format!("GpuBuffer::alloc({} * {} bytes)", len, elem_size),
-        })?;
+        let size = len
+            .checked_mul(elem_size)
+            .ok_or_else(|| TernaryError::Overflow {
+                context: format!("GpuBuffer::alloc({} * {} bytes)", len, elem_size),
+            })?;
 
         let err = unsafe { ffi::cudaMalloc(&mut dev_ptr as *mut *mut c_void, size) };
         err.to_result()?;
@@ -223,8 +224,19 @@ struct PoolSlot {
     byte_size: usize,
 }
 
+// Safety: PoolSlot is only accessed through Arc<Mutex<Vec<PoolSlot>>>.
+// The mutex provides the necessary synchronization for thread safety.
+unsafe impl Send for PoolSlot {}
+unsafe impl Sync for PoolSlot {}
+
 pub struct CudaMemoryPool {
     inner: Option<Arc<Mutex<Vec<PoolSlot>>>>,
+}
+
+impl Default for CudaMemoryPool {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl CudaMemoryPool {
@@ -236,11 +248,11 @@ impl CudaMemoryPool {
 
     pub fn alloc<T: Copy>(&self, count: usize) -> Result<PooledGpuBuffer<T>, TernaryError> {
         let elem_size = std::mem::size_of::<T>();
-        let byte_size = count.checked_mul(elem_size).ok_or_else(|| {
-            TernaryError::Overflow {
+        let byte_size = count
+            .checked_mul(elem_size)
+            .ok_or_else(|| TernaryError::Overflow {
                 context: format!("CudaMemoryPool::alloc({} * {} bytes)", count, elem_size),
-            }
-        })?;
+            })?;
 
         let inner = self.inner.as_ref().unwrap();
         let weak = Arc::downgrade(inner);
@@ -435,11 +447,11 @@ impl<T: Copy> PinnedHostBuffer<T> {
             });
         }
         let mut host_ptr: *mut c_void = ptr::null_mut();
-        let size = len.checked_mul(std::mem::size_of::<T>()).ok_or_else(|| {
-            TernaryError::Overflow {
-                context: "PinnedHostBuffer::alloc".into(),
-            }
-        })?;
+        let size =
+            len.checked_mul(std::mem::size_of::<T>())
+                .ok_or_else(|| TernaryError::Overflow {
+                    context: "PinnedHostBuffer::alloc".into(),
+                })?;
         unsafe { ffi::cudaMallocHost(&mut host_ptr as *mut *mut c_void, size) }.to_result()?;
         Ok(Self {
             ptr: host_ptr as *mut T,
@@ -642,12 +654,9 @@ impl BitLinear {
     /// * `m` - Number of output features (rows of weight matrix)
     /// * `n` - Number of input features (columns, must be multiple of 16)
     pub fn new(m: usize, n: usize) -> Result<Self, TernaryError> {
-        if n % 16 != 0 {
+        if !n.is_multiple_of(16) {
             return Err(TernaryError::Validation {
-                message: format!(
-                    "N must be a multiple of 16 for 2-bit packing, got {}",
-                    n
-                ),
+                message: format!("N must be a multiple of 16 for 2-bit packing, got {}", n),
             });
         }
         if m == 0 {
@@ -747,7 +756,10 @@ impl BitLinear {
         let mut output_u16 = vec![0u16; self.m];
         self.output_buffer.copy_to_host(&mut output_u16)?;
 
-        Ok(output_u16.iter().map(|&bits| f16::from_bits(bits)).collect())
+        Ok(output_u16
+            .iter()
+            .map(|&bits| f16::from_bits(bits))
+            .collect())
     }
 
     /// Asynchronous forward pass.
@@ -822,18 +834,15 @@ impl BitLinear {
 /// Encoding: -1 -> 10, 0 -> 00, +1 -> 01
 /// 16 weights per uint32_t, LSB-first packing.
 pub fn pack_ternary_to_u32(weights: &[i8], n: usize) -> Result<Vec<u32>, TernaryError> {
-    if n % 16 != 0 {
+    if !n.is_multiple_of(16) {
         return Err(TernaryError::Validation {
             message: format!("N must be multiple of 16, got {}", n),
         });
     }
     let total = weights.len();
-    if total % n != 0 {
+    if !total.is_multiple_of(n) {
         return Err(TernaryError::Validation {
-            message: format!(
-                "Weight length {} must be multiple of N={}",
-                total, n
-            ),
+            message: format!("Weight length {} must be multiple of N={}", total, n),
         });
     }
     let m = total / n;
@@ -863,13 +872,13 @@ pub fn pack_ternary_to_u32(weights: &[i8], n: usize) -> Result<Vec<u32>, Ternary
 
 /// Unpack uint32_t packed ternary weights back to {-1, 0, 1}.
 pub fn unpack_u32_to_ternary(packed: &[u32], n: usize) -> Result<Vec<i8>, TernaryError> {
-    if n == 0 || n % 16 != 0 {
+    if n == 0 || !n.is_multiple_of(16) {
         return Err(TernaryError::Validation {
             message: format!("N must be a positive multiple of 16, got {}", n),
         });
     }
     let packed_cols = n / 16;
-    if packed.len() % packed_cols != 0 {
+    if !packed.len().is_multiple_of(packed_cols) {
         return Err(TernaryError::Validation {
             message: format!(
                 "Packed length {} must be multiple of N/16={}",

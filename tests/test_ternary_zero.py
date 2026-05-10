@@ -616,5 +616,68 @@ class TestDataPipeline:
         assert len(loader) == 5
 
 
+
+
+class TestConvDtypeRegression:
+    """Regression: conv weight params must stay float32 after He init."""
+
+    def test_conv2d_weight_dtype_float32(self):
+        layer = tz.nn.Conv2d(3, 8, kernel_size=3, padding=1)
+        w = _to_numpy(layer.weight.data)
+        assert w.dtype == np.float32, "Conv2d weight dtype is {}, expected float32".format(w.dtype)
+
+    def test_conv1d_weight_dtype_float32(self):
+        layer = tz.nn.Conv1d(3, 8, kernel_size=3, padding=1)
+        w = _to_numpy(layer.weight.data)
+        assert w.dtype == np.float32, "Conv1d weight dtype is {}, expected float32".format(w.dtype)
+
+    def test_conv2d_forward_dtype_match(self):
+        layer = tz.nn.Conv2d(3, 8, kernel_size=3, padding=1)
+        x = randn(1, 3, 4, 4)
+        y = layer(x)
+        input_dtype = _to_numpy(x.data).dtype
+        weight_dtype = _to_numpy(layer.weight.data).dtype
+        output_dtype = _to_numpy(y.data).dtype
+        assert weight_dtype == input_dtype, "Weight {} != input {}".format(weight_dtype, input_dtype)
+        assert output_dtype == input_dtype, "Output {} != input {}".format(output_dtype, input_dtype)
+
+    def test_conv1d_forward_dtype_match(self):
+        layer = tz.nn.Conv1d(3, 8, kernel_size=3, padding=1)
+        x = randn(1, 3, 10)
+        y = layer(x)
+        input_dtype = _to_numpy(x.data).dtype
+        weight_dtype = _to_numpy(layer.weight.data).dtype
+        output_dtype = _to_numpy(y.data).dtype
+        assert weight_dtype == input_dtype, "Weight {} != input {}".format(weight_dtype, input_dtype)
+        assert output_dtype == input_dtype, "Output {} != input {}".format(output_dtype, input_dtype)
+
+    def test_conv2d_bias_dtype_float32(self):
+        layer = tz.nn.Conv2d(3, 8, kernel_size=3)
+        assert _to_numpy(layer.bias.data).dtype == np.float32
+
+    def test_conv1d_bias_dtype_float32(self):
+        layer = tz.nn.Conv1d(3, 8, kernel_size=3)
+        assert _to_numpy(layer.bias.data).dtype == np.float32
+
+
+class TestNativeExtension:
+    """Tests for the Rust native extension (_core) import and dispatch."""
+
+    def test_core_import_or_skip(self):
+        try:
+            from ternary_zero import _core
+            assert callable(_core.has_cuda)
+        except ImportError:
+            pytest.skip("_core native extension not built (run: maturin develop --release)")
+
+    def test_has_native_flag(self):
+        assert isinstance(tz._HAS_NATIVE, bool)
+
+    def test_fallback_works_without_native(self):
+        w = tz.tensor([0.8, -0.7, 0.1])
+        assert w.shape == (3,)
+        assert w.dtype == np.float32
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

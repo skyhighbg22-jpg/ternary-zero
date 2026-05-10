@@ -4,20 +4,42 @@ use std::process::Command;
 
 fn find_nvcc() -> PathBuf {
     if let Ok(cuda_home) = env::var("CUDA_HOME") {
-        let nvcc_name = if cfg!(target_os = "windows") { "nvcc.exe" } else { "nvcc" };
+        let nvcc_name = if cfg!(target_os = "windows") {
+            "nvcc.exe"
+        } else {
+            "nvcc"
+        };
         let nvcc = PathBuf::from(&cuda_home).join("bin").join(nvcc_name);
         if nvcc.exists() {
             return nvcc;
         }
     }
     if let Ok(cuda_path) = env::var("CUDA_PATH") {
-        let nvcc_name = if cfg!(target_os = "windows") { "nvcc.exe" } else { "nvcc" };
+        let nvcc_name = if cfg!(target_os = "windows") {
+            "nvcc.exe"
+        } else {
+            "nvcc"
+        };
         let nvcc = PathBuf::from(&cuda_path).join("bin").join(nvcc_name);
         if nvcc.exists() {
             return nvcc;
         }
     }
-    PathBuf::from(if cfg!(target_os = "windows") { "nvcc.exe" } else { "nvcc" })
+    PathBuf::from(if cfg!(target_os = "windows") {
+        "nvcc.exe"
+    } else {
+        "nvcc"
+    })
+}
+
+fn cuda_is_available() -> bool {
+    let nvcc = find_nvcc();
+    Command::new(&nvcc)
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok()
 }
 
 fn find_cuda_lib_path() -> Option<PathBuf> {
@@ -37,25 +59,43 @@ fn find_cuda_lib_path() -> Option<PathBuf> {
 }
 
 fn find_msvc_bin() -> Option<PathBuf> {
-    // Try using the cc crate to find the MSVC compiler
     let build = cc::Build::new();
     let compiler = build.get_compiler();
     compiler.path().parent().map(|p| p.to_path_buf())
 }
 
 fn main() {
+    println!("cargo:rerun-if-changed=build.rs");
+
+    if cfg!(feature = "cpu-only") {
+        println!("cargo:warning=cpu-only feature enabled, skipping CUDA kernel compilation");
+        println!("cargo:rustc-cfg=no_cuda");
+        return;
+    }
+
+    if !cuda_is_available() {
+        println!(
+            "cargo:warning=CUDA toolkit not found (nvcc not available), skipping CUDA kernel compilation. \
+             Use --features cpu-only to silence this warning."
+        );
+        println!("cargo:rustc-cfg=no_cuda");
+        return;
+    }
+
     let kernel_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap()).join("kernel");
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
 
     println!("cargo:rerun-if-changed=kernel/ternary_zero.cu");
     println!("cargo:rerun-if-changed=kernel/ternary_zero.h");
     println!("cargo:rerun-if-changed=kernel/ptx_utils.h");
-    println!("cargo:rerun-if-changed=build.rs");
 
     let nvcc = find_nvcc();
 
-    // Compile .cu to .obj (Windows) or .o (Linux) using nvcc directly
-    let obj_ext = if cfg!(target_os = "windows") { "obj" } else { "o" };
+    let obj_ext = if cfg!(target_os = "windows") {
+        "obj"
+    } else {
+        "o"
+    };
     let obj_path = out_dir.join(format!("ternary_zero.{}", obj_ext));
 
     let mut cmd = Command::new(&nvcc);
@@ -71,7 +111,6 @@ fn main() {
         .arg(&obj_path)
         .arg(kernel_dir.join("ternary_zero.cu"));
 
-    // On Windows, nvcc needs cl.exe in PATH. Use cc crate to find MSVC tools dir.
     if cfg!(target_os = "windows") {
         if let Some(msvc_bin) = find_msvc_bin() {
             let current_path = env::var("PATH").unwrap_or_default();
@@ -87,9 +126,7 @@ fn main() {
         panic!("nvcc compilation failed with status: {}", status);
     }
 
-    // Create a static library from the compiled object
     if cfg!(target_os = "windows") {
-        // Use MSVC lib.exe - find it in the same dir as cl.exe
         let lib_path = out_dir.join("ternary_zero.lib");
         let mut lib_cmd = if let Some(msvc_bin) = find_msvc_bin() {
             let lib_exe = msvc_bin.join("lib.exe");

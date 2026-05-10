@@ -87,7 +87,13 @@ impl CudaError {
 
 impl fmt::Display for CudaError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "CUDA error {:?} (code {}): {}", self, *self as i32, self.description())
+        write!(
+            f,
+            "CUDA error {:?} (code {}): {}",
+            self,
+            *self as i32,
+            self.description()
+        )
     }
 }
 
@@ -151,12 +157,8 @@ pub union cudaStreamAttrValue {
 extern "C" {
     pub fn cudaMalloc(dev_ptr: *mut *mut c_void, size: usize) -> CudaError;
     pub fn cudaFree(dev_ptr: *mut c_void) -> CudaError;
-    pub fn cudaMemcpy(
-        dst: *mut c_void,
-        src: *const c_void,
-        count: usize,
-        kind: c_int,
-    ) -> CudaError;
+    pub fn cudaMemcpy(dst: *mut c_void, src: *const c_void, count: usize, kind: c_int)
+        -> CudaError;
     pub fn cudaStreamCreate(stream: *mut cudaStream_t) -> CudaError;
     pub fn cudaStreamDestroy(stream: cudaStream_t) -> CudaError;
     pub fn cudaStreamSynchronize(stream: cudaStream_t) -> CudaError;
@@ -222,8 +224,6 @@ pub fn cuda_error_string(err: CudaError) -> String {
         if ptr.is_null() {
             return format!("Unknown CUDA error ({:?})", err);
         }
-        std::ffi::CStr::from_ptr(ptr)
-            .to_string_lossy()
-            .into_owned()
+        std::ffi::CStr::from_ptr(ptr).to_string_lossy().into_owned()
     }
 }

@@ -43,18 +43,10 @@ impl fmt::Display for TernaryError {
                 actual,
                 context,
             } => {
-                write!(
-                    f,
-                    "{}: expected {}, got {}",
-                    context, expected, actual
-                )
+                write!(f, "{}: expected {}, got {}", context, expected, actual)
             }
             TernaryError::InvalidTernaryValue(v) => {
-                write!(
-                    f,
-                    "invalid ternary value: {}. Must be -1, 0, or 1",
-                    v
-                )
+                write!(f, "invalid ternary value: {}. Must be -1, 0, or 1", v)
             }
             TernaryError::InvalidBitPattern(bits) => {
                 write!(

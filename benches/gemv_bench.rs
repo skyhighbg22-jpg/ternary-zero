@@ -1,6 +1,6 @@
-use criterion::{criterion_group, criterion_main, Criterion, BenchmarkId};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use half::f16;
-use ternary_zero_core::{BitLinear, pack_ternary_to_u32, ternary_quantize_ste};
+use ternary_zero_core::{pack_ternary_to_u32, ternary_quantize_ste, BitLinear};
 
 fn bench_pack_ternary(c: &mut Criterion) {
     let mut group = c.benchmark_group("pack_ternary");
@@ -52,15 +52,19 @@ fn bench_cpu_reference_gemv(c: &mut Criterion) {
             .map(|i| f16::from_f32((i as f32 * 0.001).cos()))
             .collect();
 
-        group.bench_with_input(BenchmarkId::new("cpu_gemv", n), &(weights, activations), |b, (w, a)| {
-            b.iter(|| {
-                let mut sum = 0.0f32;
-                for i in 0..n {
-                    sum += w[i] as f32 * a[i].to_f32();
-                }
-                sum
-            });
-        });
+        group.bench_with_input(
+            BenchmarkId::new("cpu_gemv", n),
+            &(weights, activations),
+            |b, (w, a)| {
+                b.iter(|| {
+                    let mut sum = 0.0f32;
+                    for i in 0..n {
+                        sum += w[i] as f32 * a[i].to_f32();
+                    }
+                    sum
+                });
+            },
+        );
     }
     group.finish();
 }

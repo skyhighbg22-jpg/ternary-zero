@@ -5,7 +5,7 @@ build-backend = "maturin"
 [project]
 name = "ternary-zero"
 version = "0.1.0"
-description = "High-performance ternary-weight neural network library with GPU-accelerated PyTorch-compatible API"
+description = "Ternary-weight neural network library with PyTorch-compatible API"
 readme = "README.md"
 license = {text = "MIT OR Apache-2.0"}
 requires-python = ">=3.9"
@@ -37,7 +37,6 @@ cpu = [
 
 [tool.maturin]
 features = ["pyo3/extension-module"]
-python-source = "ternary_zero"
 module-name = "ternary_zero._core"
 
 [tool.pytest.ini_options]

@@ -56,30 +56,57 @@ def get_system_info():
     return info
 
 
+def log_system_info(info):
+    """Print system information for benchmark reproducibility."""
+    print("=" * 70)
+    print("System Information (for reproducibility)")
+    print("=" * 70)
+    for k, v in info.items():
+        print(f"  {k}: {v}")
+    print("=" * 70)
+    sys.stdout.flush()
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Benchmark 1: Per-Step Latency Curves (training)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def bench_latency_curves(impl_name, run_fn, steps=20):
-    """Measure per-step latency over training to get a latency curve."""
-    r = run_fn(num_train_steps=steps, num_inference_samples=3)
-    step_times = []
-    total = r["train_total_time_s"]
-    avg = r["train_avg_step_ms"]
-    # Distribute total time with slight variance for realistic curve
-    for i in range(steps):
-        jitter = avg * (0.9 + 0.2 * ((i % 5) / 4))
-        step_times.append(round(jitter, 3))
+def bench_latency_curves(impl_name, run_fn, steps=20, num_runs=3):
+    """Measure training latency with warmup and repeated runs for real statistics.
+
+    Runs a warmup invocation (discarded), then num_runs measured invocations.
+    Statistics (mean, std, median, p95) are computed from actual per-run mean
+    step latencies -- no synthetic per-step data is generated.
+    """
+    warmup_steps = max(steps // 4, 3)
+    print(f"    [warmup] {warmup_steps} steps...", end="", flush=True)
+    try:
+        run_fn(num_train_steps=warmup_steps, num_inference_samples=1)
+    except Exception:
+        pass
+    print(" done.", flush=True)
+
+    run_latencies = []
+    final_r = None
+    for run_i in range(num_runs):
+        print(f"    [run {run_i + 1}/{num_runs}] {steps} steps...", end="", flush=True)
+        r = run_fn(num_train_steps=steps, num_inference_samples=3)
+        run_latencies.append(r["train_avg_step_ms"])
+        final_r = r
+        print(f" {r['train_avg_step_ms']:.1f} ms/step", flush=True)
+
+    mean_ms = statistics.mean(run_latencies)
     return {
         "implementation": impl_name,
-        "step_latencies_ms": step_times,
-        "mean_ms": avg,
-        "median_ms": statistics.median(step_times),
-        "p95_ms": sorted(step_times)[int(0.95 * len(step_times))],
-        "std_ms": statistics.stdev(step_times) if len(step_times) > 1 else 0,
-        "raw_results": r,
+        "run_latencies_ms": run_latencies,
+        "mean_ms": mean_ms,
+        "median_ms": statistics.median(run_latencies),
+        "p95_ms": sorted(run_latencies)[min(int(0.95 * len(run_latencies)), len(run_latencies) - 1)],
+        "std_ms": statistics.stdev(run_latencies) if len(run_latencies) > 1 else 0.0,
+        "measurement_type": "per_run_aggregate",
+        "num_runs": num_runs,
+        "raw_results": final_r,
     }
-
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Benchmark 2: Throughput Scaling (vary sequence length)
@@ -133,17 +160,16 @@ def main():
     parser = argparse.ArgumentParser(description="microGPT Benchmark Suite")
     parser.add_argument("--train-steps", type=int, default=20)
     parser.add_argument("--inference-samples", type=int, default=5)
+    parser.add_argument("--num-runs", type=int, default=3,
+                        help="Number of measured runs per implementation (after warmup)")
     args = parser.parse_args()
 
     sys_info = get_system_info()
-    print("=" * 70)
-    print("microGPT Comprehensive Benchmark Suite")
-    print("=" * 70)
-    for k, v in sys_info.items():
-        print(f"  {k}: {v}")
+    log_system_info(sys_info)
     print(f"  train_steps: {args.train_steps}")
     print(f"  inference_samples: {args.inference_samples}")
-    print("=" * 70)
+    print(f"  num_runs: {args.num_runs}")
+    print()
     sys.stdout.flush()
 
     all_latency = []
@@ -155,7 +181,7 @@ def main():
     sys.stdout.flush()
     try:
         from impl_pure_python import run_benchmark as run_pure
-        lc = bench_latency_curves("pure_python", run_pure, args.train_steps)
+        lc = bench_latency_curves("pure_python", run_pure, args.train_steps, args.num_runs)
         ts = bench_throughput_scaling("pure_python", run_pure, min(args.train_steps, 10))
         all_latency.append(lc)
         all_throughput.append(ts)
@@ -170,7 +196,7 @@ def main():
     sys.stdout.flush()
     try:
         from impl_numpy import run_benchmark as run_numpy
-        lc = bench_latency_curves("numpy", run_numpy, args.train_steps)
+        lc = bench_latency_curves("numpy", run_numpy, args.train_steps, args.num_runs)
         ts = bench_throughput_scaling("numpy", run_numpy, min(args.train_steps, 10))
         all_latency.append(lc)
         all_throughput.append(ts)
@@ -185,7 +211,7 @@ def main():
     sys.stdout.flush()
     try:
         from impl_pytorch import run_benchmark as run_torch, DEVICE
-        lc = bench_latency_curves("pytorch", run_torch, args.train_steps)
+        lc = bench_latency_curves("pytorch", run_torch, args.train_steps, args.num_runs)
         ts = bench_throughput_scaling("pytorch", run_torch, min(args.train_steps, 10))
         all_latency.append(lc)
         all_throughput.append(ts)
@@ -200,7 +226,7 @@ def main():
     sys.stdout.flush()
     try:
         from impl_ternary_zero import run_benchmark as run_tz
-        lc = bench_latency_curves("ternary_zero", lambda **kw: run_tz(use_bitlinear=False, **kw), args.train_steps)
+        lc = bench_latency_curves("ternary_zero", lambda **kw: run_tz(use_bitlinear=False, **kw), args.train_steps, args.num_runs)
         ts = bench_throughput_scaling("ternary_zero", lambda **kw: run_tz(use_bitlinear=False, **kw), min(args.train_steps, 10))
         all_latency.append(lc)
         all_throughput.append(ts)
@@ -214,7 +240,7 @@ def main():
     print("\n[5/6] Ternary-Zero BitLinear (2-bit ternary quantized)...")
     sys.stdout.flush()
     try:
-        lc = bench_latency_curves("tz_bitlinear", lambda **kw: run_tz(use_bitlinear=True, **kw), args.train_steps)
+        lc = bench_latency_curves("tz_bitlinear", lambda **kw: run_tz(use_bitlinear=True, **kw), args.train_steps, args.num_runs)
         ts = bench_throughput_scaling("tz_bitlinear", lambda **kw: run_tz(use_bitlinear=True, **kw), min(args.train_steps, 10))
         all_latency.append(lc)
         all_throughput.append(ts)
@@ -229,7 +255,7 @@ def main():
     sys.stdout.flush()
     try:
         from impl_cupy import run_benchmark as run_cupy
-        lc = bench_latency_curves("cupy", run_cupy, args.train_steps)
+        lc = bench_latency_curves("cupy", run_cupy, args.train_steps, args.num_runs)
         ts = bench_throughput_scaling("cupy", run_cupy, min(args.train_steps, 10))
         gpu_occ = bench_gpu_occupancy()
         all_latency.append(lc)
@@ -272,17 +298,15 @@ def main():
     for ts in all_throughput:
         print(f"{ts['implementation']:<20} {ts['train_throughput_steps_s']:<18.2f} {ts['inference_throughput_tokens_s']:<18.1f}")
 
-    # Latency curve data
-    print("\n--- Latency Curves (per-step ms) ---")
+    # Latency data
+    print("\n--- Latency (per-run mean ms/step) ---")
     for lc in all_latency:
         impl = lc["implementation"]
-        lats = lc["step_latencies_ms"]
-        print(f"  {impl}: mean={lc['mean_ms']:.1f}  median={lc['median_ms']:.1f}  p95={lc['p95_ms']:.1f}  std={lc['std_ms']:.1f}")
-        # Show first 5 and last 5
-        first5 = ", ".join(f"{x:.1f}" for x in lats[:5])
-        last5 = ", ".join(f"{x:.1f}" for x in lats[-5:])
-        print(f"    first5: [{first5}]")
-        print(f"    last5:  [{last5}]")
+        runs = lc["run_latencies_ms"]
+        runs_str = ", ".join(f"{x:.1f}" for x in runs)
+        print(f"  {impl}: mean={lc['mean_ms']:.1f}  std={lc['std_ms']:.1f}  "
+              f"median={lc['median_ms']:.1f}  p95={lc['p95_ms']:.1f}  "
+              f"runs=[{runs_str}]")
 
     # GPU occupancy
     if "cupy_gpu_occupancy" in all_raw:
@@ -316,7 +340,7 @@ def main():
     # ═══════════════════════════════════════════════════════════════════════
     output = {
         "system": sys_info,
-        "config": {"train_steps": args.train_steps, "inference_samples": args.inference_samples},
+        "config": {"train_steps": args.train_steps, "inference_samples": args.inference_samples, "num_runs": args.num_runs},
         "latency_curves": [{k: v for k, v in lc.items() if k != "raw_results"} for lc in all_latency],
         "throughput_scaling": all_throughput,
         "gpu_occupancy": all_raw.get("cupy_gpu_occupancy"),
@@ -347,7 +371,7 @@ def main():
     print(f"\nJSON results: {out_path}")
 
     # Generate markdown table for BENCHMARKS.md
-    md = generate_markdown(all_latency, all_throughput, all_raw, sys_info)
+    md = generate_markdown(all_latency, all_throughput, all_raw, sys_info, args.num_runs)
     md_path = os.path.join(PROJECT_ROOT, "benchmarks", "comparison_table.md")
     with open(md_path, "w", encoding="utf-8") as f:
         f.write(md)
@@ -356,7 +380,7 @@ def main():
     print("\nDone.")
 
 
-def generate_markdown(all_latency, all_throughput, all_raw, sys_info):
+def generate_markdown(all_latency, all_throughput, all_raw, sys_info, num_runs=3):
     """Generate markdown comparison table."""
     lines = [
         "# microGPT Implementation Benchmark: Actual Measured Results",
@@ -373,16 +397,19 @@ def generate_markdown(all_latency, all_throughput, all_raw, sys_info):
         "- **Model:** microGPT (1 layer, 16 embd, 4 heads, 16 block_size, ~4192 params)",
         "- **Dataset:** Karpathy names.txt (32,033 names)",
         "- **Task:** Character-level language model training + autoregressive inference",
+        f"- **Measurement:** Warmup run discarded; {num_runs} measured runs per implementation",
+        "- **Statistics:** Mean, std, median, p95 computed from per-run mean step latencies",
         "",
         "## Latency (ms/step, training)",
         "",
-        "| Implementation | Mean | Median | P95 | Std Dev |",
-        "|---------------|------|--------|-----|---------|",
+        "| Implementation | Mean | Std Dev | Median | P95 | Runs |",
+        "|---------------|------|---------|--------|-----|------|",
     ]
     for lc in all_latency:
+        runs_str = ", ".join(f"{x:.1f}" for x in lc["run_latencies_ms"])
         lines.append(
-            f"| {lc['implementation']} | {lc['mean_ms']:.1f} | {lc['median_ms']:.1f} | "
-            f"{lc['p95_ms']:.1f} | {lc['std_ms']:.1f} |"
+            f"| {lc['implementation']} | {lc['mean_ms']:.1f} | {lc['std_ms']:.1f} | "
+            f"{lc['median_ms']:.1f} | {lc['p95_ms']:.1f} | {runs_str} |"
         )
 
     lines += [
@@ -459,16 +486,16 @@ def generate_markdown(all_latency, all_throughput, all_raw, sys_info):
         "",
         "### Performance Delta Explanation",
         "",
-        "1. **Pure Python → NumPy:** NumPy replaces Python scalar loops with vectorized "
+        "1. **Pure Python -> NumPy:** NumPy replaces Python scalar loops with vectorized "
         "array operations. The inner loops (linear, softmax, rmsnorm) become single C-level "
         "BLAS/LAPACK calls, eliminating Python interpreter overhead per element.",
         "",
-        "2. **NumPy → PyTorch:** PyTorch adds autograd (automatic differentiation) on top "
+        "2. **NumPy -> PyTorch:** PyTorch adds autograd (automatic differentiation) on top "
         "of similar vectorized operations. On CPU, PyTorch uses the same BLAS backend as NumPy "
         "(MKL/OpenBLAS), so raw compute throughput is comparable. The overhead comes from "
         "graph construction and gradient bookkeeping.",
         "",
-        "3. **NumPy/PyTorch → CuPy:** CuPy offloads all array operations to the GPU via CUDA. "
+        "3. **NumPy/PyTorch -> CuPy:** CuPy offloads all array operations to the GPU via CUDA. "
         "For this tiny model (~4K params), GPU kernel launch overhead dominates, so the speedup "
         "is modest. The advantage grows dramatically with larger models where memory bandwidth "
         "and compute parallelism dominate.",

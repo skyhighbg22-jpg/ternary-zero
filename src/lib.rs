@@ -1,23 +1,25 @@
+#![allow(clippy::useless_conversion)]
+
+pub mod bitlinear;
 pub mod error;
 pub mod ffi;
-pub mod bitlinear;
 pub mod ste;
 
 pub use bitlinear::{
-    BitLinear, CudaEvent, CudaMemoryPool, CudaStream, GpuBuffer, PendingResult,
-    PinnedHostBuffer, PooledGpuBuffer, pack_ternary_to_u32, unpack_u32_to_ternary,
+    pack_ternary_to_u32, unpack_u32_to_ternary, BitLinear, CudaEvent, CudaMemoryPool, CudaStream,
+    GpuBuffer, PendingResult, PinnedHostBuffer, PooledGpuBuffer,
 };
 pub use error::TernaryError;
-pub use ffi::{CudaError, cuda_error_string};
+pub use ffi::{cuda_error_string, CudaError};
 pub use ste::{
-    dequantize_ternary, ste_backward_activations, ste_backward_weights,
-    ternary_quantize_fixed, ternary_quantize_ste,
+    dequantize_ternary, ste_backward_activations, ste_backward_weights, ternary_quantize_fixed,
+    ternary_quantize_ste,
 };
 
-use pyo3::prelude::*;
-use pyo3::exceptions::PyRuntimeError;
-use numpy::{PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2};
 use ndarray::Array2;
+use numpy::{PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2};
+use pyo3::exceptions::PyRuntimeError;
+use pyo3::prelude::*;
 
 impl From<CudaError> for PyErr {
     fn from(err: CudaError) -> PyErr {
@@ -95,9 +97,21 @@ fn ste_backward_weights_py<'py>(
     raw_weights: PyReadonlyArray1<'py, f32>,
     scale: f32,
 ) -> PyResult<Bound<'py, PyArray1<f32>>> {
-    let go: Vec<half::f16> = grad_output.as_slice()?.iter().map(|&v| half::f16::from_f32(v)).collect();
-    let act: Vec<half::f16> = activations.as_slice()?.iter().map(|&v| half::f16::from_f32(v)).collect();
-    let rw: Vec<half::f16> = raw_weights.as_slice()?.iter().map(|&v| half::f16::from_f32(v)).collect();
+    let go: Vec<half::f16> = grad_output
+        .as_slice()?
+        .iter()
+        .map(|&v| half::f16::from_f32(v))
+        .collect();
+    let act: Vec<half::f16> = activations
+        .as_slice()?
+        .iter()
+        .map(|&v| half::f16::from_f32(v))
+        .collect();
+    let rw: Vec<half::f16> = raw_weights
+        .as_slice()?
+        .iter()
+        .map(|&v| half::f16::from_f32(v))
+        .collect();
     let grad_f16 = ste_backward_weights(&go, &act, &rw, scale)?;
     let grad_f32: Vec<f32> = grad_f16.iter().map(|h| h.to_f32()).collect();
     Ok(PyArray1::from_vec_bound(py, grad_f32))
@@ -110,7 +124,11 @@ fn ste_backward_activations_py<'py>(
     ternary_weights: PyReadonlyArray1<'py, i8>,
     scale: f32,
 ) -> PyResult<Bound<'py, PyArray1<f32>>> {
-    let go: Vec<half::f16> = grad_output.as_slice()?.iter().map(|&v| half::f16::from_f32(v)).collect();
+    let go: Vec<half::f16> = grad_output
+        .as_slice()?
+        .iter()
+        .map(|&v| half::f16::from_f32(v))
+        .collect();
     let tw = ternary_weights.as_slice()?;
     let grad_f16 = ste_backward_activations(&go, tw, scale)?;
     let grad_f32: Vec<f32> = grad_f16.iter().map(|h| h.to_f32()).collect();
@@ -128,14 +146,18 @@ fn ternary_gemv_cpu<'py>(
     let w = weights.as_slice()?;
     let act = activations.as_slice()?;
     if w.len() != m * n {
-        return Err(pyo3::exceptions::PyValueError::new_err(
-            format!("weights length {} != M*N = {}", w.len(), m * n),
-        ));
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "weights length {} != M*N = {}",
+            w.len(),
+            m * n
+        )));
     }
     if act.len() != n {
-        return Err(pyo3::exceptions::PyValueError::new_err(
-            format!("activations length {} != N = {}", act.len(), n),
-        ));
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "activations length {} != N = {}",
+            act.len(),
+            n
+        )));
     }
 
     let mut output = vec![0.0f32; m];
@@ -160,9 +182,11 @@ fn ternary_gemm_cpu<'py>(
     let m = w.shape()[0];
     let k = w.shape()[1];
     if act.shape()[0] != k {
-        return Err(pyo3::exceptions::PyValueError::new_err(
-            format!("inner dimensions must match: weights K={} vs activations K={}", k, act.shape()[0]),
-        ));
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "inner dimensions must match: weights K={} vs activations K={}",
+            k,
+            act.shape()[0]
+        )));
     }
     let n = act.shape()[1];
 

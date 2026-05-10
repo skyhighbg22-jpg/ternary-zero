@@ -42,8 +42,8 @@ class Conv2d(Module):
         kh, kw = self.kernel_size
         fan_in = in_channels * kh * kw // groups
         self.weight = Parameter(
-            np.random.randn(out_channels, in_channels // groups, kh, kw).astype(np.float32)
-            * np.sqrt(2.0 / fan_in)
+            (np.random.randn(out_channels, in_channels // groups, kh, kw)
+             * np.sqrt(2.0 / fan_in)).astype(np.float32)
         )
         if bias:
             self.bias = Parameter(np.zeros(out_channels, dtype=np.float32))
@@ -126,8 +126,8 @@ class Conv1d(Module):
 
         fan_in = in_channels * kernel_size
         self.weight = Parameter(
-            np.random.randn(out_channels, in_channels, kernel_size).astype(np.float32)
-            * np.sqrt(2.0 / fan_in)
+            (np.random.randn(out_channels, in_channels, kernel_size)
+             * np.sqrt(2.0 / fan_in)).astype(np.float32)
         )
         if bias:
             self.bias = Parameter(np.zeros(out_channels, dtype=np.float32))

@@ -48,7 +48,11 @@ pub fn ternary_quantize_ste(weights: &[f16], alpha: f32) -> Result<(Vec<i8>, f32
             if abs_wf > threshold {
                 scale_sum += abs_wf;
                 scale_count += 1;
-                if wf > 0.0 { 1 } else { -1 }
+                if wf > 0.0 {
+                    1
+                } else {
+                    -1
+                }
             } else {
                 0
             }
@@ -123,11 +127,7 @@ pub fn ste_backward_weights(
             let w = raw_weights[mi * n + ni].to_f32();
 
             let w_normalized = w.abs() / scale;
-            let grad = if w_normalized <= 1.0 {
-                go * x
-            } else {
-                0.0
-            };
+            let grad = if w_normalized <= 1.0 { go * x } else { 0.0 };
 
             grad_weights.push(f16::from_f32(grad));
         }

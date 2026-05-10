@@ -1,0 +1,8 @@
+﻿[env]
+# PyO3 interpreter discovery: set to a cross-platform Python command.
+# Override with PYO3_PYTHON=/path/to/python if auto-detection fails.
+PYO3_PYTHON = "python"
+
+[build]
+# Incremental compilation for faster debug builds
+incremental = true
