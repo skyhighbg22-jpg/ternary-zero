@@ -245,7 +245,7 @@ If you use Ternary-Zero in your research, please cite:
 ```bibtex
 @article{ternaryzero2026,
   title     = {Ternary-Zero: Sub-Byte GEMV Acceleration for Consumer GPUs},
-  author    = {Your Name and Contributors},
+  author    = {Vaishant Sai Sambu},
   journal   = {arXiv preprint arXiv:2605.XXXXX},
   year      = {2026},
   url       = {https://arxiv.org/abs/2605.XXXXX}
