@@ -1,10 +1,16 @@
 use crate::error::TernaryError;
+
+#[cfg(not(no_cuda))]
 use crate::ffi::{
     self, cudaEvent_t, cudaStream_t, CUDA_MEMCPY_DEVICE_TO_HOST, CUDA_MEMCPY_HOST_TO_DEVICE,
 };
+#[cfg(not(no_cuda))]
 use half::f16;
+#[cfg(not(no_cuda))]
 use std::os::raw::c_void;
+#[cfg(not(no_cuda))]
 use std::ptr;
+#[cfg(not(no_cuda))]
 use std::sync::{Arc, Mutex, Weak};
 
 // =====================================================================
@@ -19,11 +25,13 @@ use std::sync::{Arc, Mutex, Weak};
 //   - NOT Sync: concurrent &GpuBuffer access could race on host-side
 //     memcpy destinations. Use Mutex<GpuBuffer> if shared access is needed.
 
+#[cfg(not(no_cuda))]
 pub struct GpuBuffer<T: Copy> {
     ptr: *mut T,
     len: usize,
 }
 
+#[cfg(not(no_cuda))]
 impl<T: Copy> GpuBuffer<T> {
     pub fn alloc(len: usize) -> Result<Self, TernaryError> {
         if len == 0 {
@@ -185,6 +193,7 @@ impl<T: Copy> GpuBuffer<T> {
     }
 }
 
+#[cfg(not(no_cuda))]
 impl<T: Copy> Drop for GpuBuffer<T> {
     fn drop(&mut self) {
         if !self.ptr.is_null() {
@@ -201,6 +210,7 @@ impl<T: Copy> Drop for GpuBuffer<T> {
 // Sync is intentionally NOT implemented: shared &GpuBuffer across
 // threads could race on host-side memcpy destinations without
 // external synchronization.
+#[cfg(not(no_cuda))]
 unsafe impl<T: Copy> Send for GpuBuffer<T> {}
 
 // =====================================================================
@@ -219,6 +229,7 @@ unsafe impl<T: Copy> Send for GpuBuffer<T> {}
 //   - On buffer drop after pool is gone: Weak upgrade fails, so the
 //     buffer frees its own allocation directly.
 
+#[cfg(not(no_cuda))]
 struct PoolSlot {
     ptr: *mut c_void,
     byte_size: usize,
@@ -226,19 +237,24 @@ struct PoolSlot {
 
 // Safety: PoolSlot is only accessed through Arc<Mutex<Vec<PoolSlot>>>.
 // The mutex provides the necessary synchronization for thread safety.
+#[cfg(not(no_cuda))]
 unsafe impl Send for PoolSlot {}
+#[cfg(not(no_cuda))]
 unsafe impl Sync for PoolSlot {}
 
+#[cfg(not(no_cuda))]
 pub struct CudaMemoryPool {
     inner: Option<Arc<Mutex<Vec<PoolSlot>>>>,
 }
 
+#[cfg(not(no_cuda))]
 impl Default for CudaMemoryPool {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[cfg(not(no_cuda))]
 impl CudaMemoryPool {
     pub fn new() -> Self {
         Self {
@@ -293,6 +309,7 @@ impl CudaMemoryPool {
     }
 }
 
+#[cfg(not(no_cuda))]
 impl Drop for CudaMemoryPool {
     fn drop(&mut self) {
         if let Some(arc) = self.inner.take() {
@@ -325,6 +342,7 @@ impl Drop for CudaMemoryPool {
 // Pooled GPU Buffer: Pool-Managed Device Memory
 // =====================================================================
 
+#[cfg(not(no_cuda))]
 pub struct PooledGpuBuffer<T: Copy> {
     ptr: *mut T,
     len: usize,
@@ -332,6 +350,7 @@ pub struct PooledGpuBuffer<T: Copy> {
     pool: Weak<Mutex<Vec<PoolSlot>>>,
 }
 
+#[cfg(not(no_cuda))]
 impl<T: Copy> PooledGpuBuffer<T> {
     pub fn copy_from_host(&mut self, data: &[T]) -> Result<(), TernaryError> {
         if data.len() != self.len {
@@ -405,6 +424,7 @@ impl<T: Copy> PooledGpuBuffer<T> {
     }
 }
 
+#[cfg(not(no_cuda))]
 impl<T: Copy> Drop for PooledGpuBuffer<T> {
     fn drop(&mut self) {
         if self.ptr.is_null() {
@@ -427,17 +447,20 @@ impl<T: Copy> Drop for PooledGpuBuffer<T> {
     }
 }
 
+#[cfg(not(no_cuda))]
 unsafe impl<T: Copy> Send for PooledGpuBuffer<T> {}
 
 // =====================================================================
 // Pinned Host Buffer: Page-Locked Host Memory for Async DMA
 // =====================================================================
 
+#[cfg(not(no_cuda))]
 pub struct PinnedHostBuffer<T: Copy> {
     ptr: *mut T,
     len: usize,
 }
 
+#[cfg(not(no_cuda))]
 impl<T: Copy> PinnedHostBuffer<T> {
     pub fn alloc(len: usize) -> Result<Self, TernaryError> {
         if len == 0 {
@@ -492,6 +515,7 @@ impl<T: Copy> PinnedHostBuffer<T> {
     }
 }
 
+#[cfg(not(no_cuda))]
 impl<T: Copy> Drop for PinnedHostBuffer<T> {
     fn drop(&mut self) {
         if !self.ptr.is_null() {
@@ -502,14 +526,17 @@ impl<T: Copy> Drop for PinnedHostBuffer<T> {
     }
 }
 
+#[cfg(not(no_cuda))]
 unsafe impl<T: Copy> Send for PinnedHostBuffer<T> {}
 
 // =====================================================================
 // CUDA Stream: RAII Wrapper
 // =====================================================================
 
+#[cfg(not(no_cuda))]
 pub struct CudaStream(pub cudaStream_t);
 
+#[cfg(not(no_cuda))]
 impl CudaStream {
     pub fn new() -> Result<Self, TernaryError> {
         let mut stream: cudaStream_t = ptr::null_mut();
@@ -527,6 +554,7 @@ impl CudaStream {
     }
 }
 
+#[cfg(not(no_cuda))]
 impl Drop for CudaStream {
     fn drop(&mut self) {
         if !self.0.is_null() {
@@ -540,14 +568,17 @@ impl Drop for CudaStream {
 // Safety: safe to transfer ownership between threads.
 // NOT Sync: concurrent stream operations without external
 // synchronization could produce non-deterministic ordering.
+#[cfg(not(no_cuda))]
 unsafe impl Send for CudaStream {}
 
 // =====================================================================
 // CUDA Event: RAII Wrapper for Stream Synchronization
 // =====================================================================
 
+#[cfg(not(no_cuda))]
 pub struct CudaEvent(cudaEvent_t);
 
+#[cfg(not(no_cuda))]
 impl CudaEvent {
     pub fn new() -> Result<Self, TernaryError> {
         let mut event: cudaEvent_t = ptr::null_mut();
@@ -571,6 +602,7 @@ impl CudaEvent {
     }
 }
 
+#[cfg(not(no_cuda))]
 impl Drop for CudaEvent {
     fn drop(&mut self) {
         if !self.0.is_null() {
@@ -581,6 +613,7 @@ impl Drop for CudaEvent {
     }
 }
 
+#[cfg(not(no_cuda))]
 unsafe impl Send for CudaEvent {}
 
 // =====================================================================
@@ -597,6 +630,7 @@ unsafe impl Send for CudaEvent {}
 // Drop synchronizes the event to guarantee GPU work completes before
 // device buffers are returned to the pool.
 
+#[cfg(not(no_cuda))]
 pub struct PendingResult {
     host_buffer: PinnedHostBuffer<u16>,
     event: CudaEvent,
@@ -605,6 +639,7 @@ pub struct PendingResult {
     m: usize,
 }
 
+#[cfg(not(no_cuda))]
 impl PendingResult {
     /// Non-blocking check: has the GPU finished all work?
     pub fn is_ready(&self) -> bool {
@@ -627,6 +662,7 @@ impl PendingResult {
     }
 }
 
+#[cfg(not(no_cuda))]
 impl Drop for PendingResult {
     fn drop(&mut self) {
         let _ = self.event.synchronize();
@@ -637,6 +673,7 @@ impl Drop for PendingResult {
 // BitLinear Layer
 // =====================================================================
 
+#[cfg(not(no_cuda))]
 pub struct BitLinear {
     packed_weights: GpuBuffer<u32>,
     output_buffer: GpuBuffer<u16>,
@@ -647,6 +684,7 @@ pub struct BitLinear {
     l2_pinned: bool,
 }
 
+#[cfg(not(no_cuda))]
 impl BitLinear {
     /// Create a new BitLinear layer.
     ///
@@ -764,7 +802,7 @@ impl BitLinear {
 
     /// Asynchronous forward pass.
     ///
-    /// Pipelines H2D copy → kernel → D2H copy on the CUDA stream
+    /// Pipelines H2D copy -> kernel -> D2H copy on the CUDA stream
     /// without any host-side synchronisation.  Returns a `PendingResult`
     /// that can be polled (`is_ready()`) or consumed (`get_output()`).
     ///

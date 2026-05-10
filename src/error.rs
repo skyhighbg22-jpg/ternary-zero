@@ -1,5 +1,6 @@
 use std::fmt;
 
+#[cfg(not(no_cuda))]
 use crate::ffi::CudaError;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::PyErr;
@@ -11,6 +12,7 @@ use pyo3::PyErr;
 #[derive(Debug, Clone)]
 pub enum TernaryError {
     /// CUDA runtime error from device operations.
+    #[cfg(not(no_cuda))]
     Cuda(CudaError),
     /// Input validation failure (e.g., non-positive dimensions, bad alpha).
     Validation { message: String },
@@ -31,6 +33,7 @@ pub enum TernaryError {
 impl fmt::Display for TernaryError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            #[cfg(not(no_cuda))]
             TernaryError::Cuda(e) => write!(f, "{}", e),
             TernaryError::Validation { message } => {
                 write!(f, "validation error: {}", message)
@@ -62,12 +65,14 @@ impl fmt::Display for TernaryError {
 impl std::error::Error for TernaryError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            #[cfg(not(no_cuda))]
             TernaryError::Cuda(e) => Some(e),
             _ => None,
         }
     }
 }
 
+#[cfg(not(no_cuda))]
 impl From<CudaError> for TernaryError {
     fn from(err: CudaError) -> Self {
         TernaryError::Cuda(err)

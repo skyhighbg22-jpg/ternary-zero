@@ -5,12 +5,16 @@ pub mod error;
 pub mod ffi;
 pub mod ste;
 
+pub use bitlinear::{pack_ternary_to_u32, unpack_u32_to_ternary};
+#[cfg(not(no_cuda))]
 pub use bitlinear::{
-    pack_ternary_to_u32, unpack_u32_to_ternary, BitLinear, CudaEvent, CudaMemoryPool, CudaStream,
-    GpuBuffer, PendingResult, PinnedHostBuffer, PooledGpuBuffer,
+    BitLinear, CudaEvent, CudaMemoryPool, CudaStream, GpuBuffer, PendingResult, PinnedHostBuffer,
+    PooledGpuBuffer,
 };
 pub use error::TernaryError;
-pub use ffi::{cuda_error_string, CudaError};
+#[cfg(not(no_cuda))]
+pub use ffi::cuda_error_string;
+pub use ffi::CudaError;
 pub use ste::{
     dequantize_ternary, ste_backward_activations, ste_backward_weights, ternary_quantize_fixed,
     ternary_quantize_ste,
@@ -21,6 +25,7 @@ use numpy::{PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2};
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 
+#[cfg(not(no_cuda))]
 impl From<CudaError> for PyErr {
     fn from(err: CudaError) -> PyErr {
         PyRuntimeError::new_err(format!("{}", err))
@@ -203,10 +208,17 @@ fn ternary_gemm_cpu<'py>(
     Ok(PyArray2::from_owned_array_bound(py, result))
 }
 
+#[cfg(not(no_cuda))]
 #[pyfunction]
 fn has_cuda() -> bool {
     let err = unsafe { ffi::cudaGetLastError() };
     err == CudaError::Success || err == CudaError::InitializationError
+}
+
+#[cfg(no_cuda)]
+#[pyfunction]
+fn has_cuda() -> bool {
+    false
 }
 
 #[pymodule]

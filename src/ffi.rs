@@ -1,6 +1,7 @@
 #![allow(non_camel_case_types)]
 
 use std::fmt;
+#[cfg(not(no_cuda))]
 use std::os::raw::{c_int, c_void};
 
 #[repr(C)]
@@ -40,6 +41,7 @@ pub enum CudaError {
 }
 
 impl CudaError {
+    #[cfg(not(no_cuda))]
     pub fn to_result(self) -> Result<(), CudaError> {
         if self == CudaError::Success {
             Ok(())
@@ -99,30 +101,38 @@ impl fmt::Display for CudaError {
 
 impl std::error::Error for CudaError {}
 
+#[cfg(not(no_cuda))]
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct CUstream_st {
     _private: [u8; 0],
 }
 
+#[cfg(not(no_cuda))]
 pub type cudaStream_t = *mut CUstream_st;
 
+#[cfg(not(no_cuda))]
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct CUevent_st {
     _private: [u8; 0],
 }
 
+#[cfg(not(no_cuda))]
 pub type cudaEvent_t = *mut CUevent_st;
 
 // Copy kind constants
+#[cfg(not(no_cuda))]
 pub const CUDA_MEMCPY_HOST_TO_DEVICE: c_int = 1;
+#[cfg(not(no_cuda))]
 pub const CUDA_MEMCPY_DEVICE_TO_HOST: c_int = 2;
 
 // Stream attribute enum value for access policy window
+#[cfg(not(no_cuda))]
 pub const CUDA_STREAM_ATTRIBUTE_ACCESS_POLICY_WINDOW: c_int = 1;
 
 // Access property types
+#[cfg(not(no_cuda))]
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub enum cudaAccessProperty {
@@ -132,6 +142,7 @@ pub enum cudaAccessProperty {
     Num,
 }
 
+#[cfg(not(no_cuda))]
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct cudaAccessPolicyWindow {
@@ -142,6 +153,7 @@ pub struct cudaAccessPolicyWindow {
     pub miss_prop: cudaAccessProperty,
 }
 
+#[cfg(not(no_cuda))]
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub union cudaStreamAttrValue {
@@ -153,6 +165,7 @@ pub union cudaStreamAttrValue {
 // External CUDA Runtime Functions
 // =====================================================================
 
+#[cfg(not(no_cuda))]
 #[link(name = "cudart_static")]
 extern "C" {
     pub fn cudaMalloc(dev_ptr: *mut *mut c_void, size: usize) -> CudaError;
@@ -197,6 +210,7 @@ extern "C" {
 // External Ternary-Zero Kernel Function
 // =====================================================================
 
+#[cfg(not(no_cuda))]
 extern "C" {
     pub fn ternary_zero_gemv_f16(
         weights: *const u32,
@@ -218,6 +232,7 @@ extern "C" {
 // Helper: Get CUDA error string
 // =====================================================================
 
+#[cfg(not(no_cuda))]
 pub fn cuda_error_string(err: CudaError) -> String {
     unsafe {
         let ptr = cudaGetErrorString(err);
