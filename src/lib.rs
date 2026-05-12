@@ -591,21 +591,6 @@ fn benchmark_kernel_gpu<'py>(
     d_act.copy_from_host(&act_u16).map_err(|e| {
         pyo3::exceptions::PyRuntimeError::new_err(format!("H2D copy activations failed: {}", e))
     })?;
-    let mut d_act = GpuBuffer::<f32>::alloc(n).map_err(|e| {
-        pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to alloc GPU activations: {}", e))
-    })?;
-    let mut d_output = GpuBuffer::<f16>::alloc(m).map_err(|e| {
-        pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to alloc GPU output: {}", e))
-    })?;
-
-    d_weights.copy_from_host(pw).map_err(|e| {
-        pyo3::exceptions::PyRuntimeError::new_err(format!("H2D copy weights failed: {}", e))
-    })?;
-
-    let act_u16: Vec<u16> = act.iter().map(|&v| f16::from_f32(v).to_bits()).collect();
-    d_act.copy_from_host(&act_u16).map_err(|e| {
-        pyo3::exceptions::PyRuntimeError::new_err(format!("H2D copy activations failed: {}", e))
-    })?;
 
     let start_event = CudaEvent::new().map_err(|e| {
         pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to create start event: {}", e))
@@ -700,7 +685,7 @@ fn benchmark_kernel_gpu<'py>(
         0.0
     };
 
-    let dict = PyDict::new(py);
+    let dict = PyDict::new_bound(py);
     dict.set_item("min_us", min_ms * 1000.0)?;
     dict.set_item("max_us", max_ms * 1000.0)?;
     dict.set_item("mean_us", mean_ms * 1000.0)?;

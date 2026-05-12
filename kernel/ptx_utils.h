@@ -4,8 +4,6 @@
 #include <cuda_fp16.h>
 #include <cstdint>
 
-#ifdef __CUDA_ARCH__
-
 // =====================================================================
 // PTX Bit-Manipulation Macros for 2-Bit Ternary Weight Decompression
 // =====================================================================
@@ -48,6 +46,8 @@
 #define PTX_SELP(dst, a, b, pred)                                              \
     asm volatile("{ .reg .pred p; setp.ne.b32 p, %3, 0; selp.b32 %0, %1, %2, p; }" \
                  : "=r"(dst) : "r"(a), "r"(b), "r"(pred))
+
+#ifdef __CUDA_ARCH__
 
 // =====================================================================
 // LOP3.LUT Truth Table Constants
