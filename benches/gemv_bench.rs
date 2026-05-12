@@ -84,9 +84,7 @@ fn bench_cpu_packed_gemv(c: &mut Criterion) {
             })
             .collect();
         let packed = pack_ternary_to_u32(&weights, n).unwrap();
-        let activations: Vec<f32> = (0..n)
-            .map(|i| (i as f32 * 0.001).cos())
-            .collect();
+        let activations: Vec<f32> = (0..n).map(|i| (i as f32 * 0.001).cos()).collect();
 
         group.bench_with_input(
             BenchmarkId::new("packed_gemv", n),

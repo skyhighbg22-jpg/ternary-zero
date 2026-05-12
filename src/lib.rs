@@ -20,13 +20,13 @@ pub use ste::{
     ternary_quantize_ste,
 };
 
+#[cfg(not(no_cuda))]
+use half::f16;
 use ndarray::Array2;
 use numpy::{PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2};
 #[cfg(not(no_cuda))]
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
-#[cfg(not(no_cuda))]
-use half::f16;
 
 #[cfg(not(no_cuda))]
 impl From<CudaError> for PyErr {
@@ -445,7 +445,8 @@ fn ternary_gemv_gpu<'py>(
 ) -> PyResult<Bound<'py, PyArray1<f32>>> {
     if !n.is_multiple_of(16) {
         return Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "N must be multiple of 16, got {}", n
+            "N must be multiple of 16, got {}",
+            n
         )));
     }
     let pw = packed_weights.as_slice()?;
@@ -454,12 +455,16 @@ fn ternary_gemv_gpu<'py>(
     let expected_pw = m * packed_cols;
     if pw.len() != expected_pw {
         return Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "packed_weights length {} != M*(N/16) = {}", pw.len(), expected_pw
+            "packed_weights length {} != M*(N/16) = {}",
+            pw.len(),
+            expected_pw
         )));
     }
     if act.len() != n {
         return Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "activations length {} != N = {}", act.len(), n
+            "activations length {} != N = {}",
+            act.len(),
+            n
         )));
     }
 
@@ -494,7 +499,9 @@ fn ternary_gemv_gpu<'py>(
             stream.raw(),
             use_fp32_acc as std::os::raw::c_int,
         )
-    }.to_result().map_err(|e| {
+    }
+    .to_result()
+    .map_err(|e| {
         pyo3::exceptions::PyRuntimeError::new_err(format!("Kernel launch failed: {}", e))
     })?;
 
@@ -503,7 +510,10 @@ fn ternary_gemv_gpu<'py>(
         pyo3::exceptions::PyRuntimeError::new_err(format!("D2H copy failed: {}", e))
     })?;
 
-    let output_f32: Vec<f32> = output_u16.iter().map(|&bits| f16::from_bits(bits).to_f32()).collect();
+    let output_f32: Vec<f32> = output_u16
+        .iter()
+        .map(|&bits| f16::from_bits(bits).to_f32())
+        .collect();
     Ok(PyArray1::from_vec_bound(py, output_f32))
 }
 
