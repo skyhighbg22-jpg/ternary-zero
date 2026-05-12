@@ -169,14 +169,14 @@ fn ternary_gemv_cpu<'py>(
     }
 
     let mut output = vec![0.0f32; m];
-    for row in 0..m {
+    for (row, out) in output.iter_mut().enumerate().take(m) {
         let row_start = row * n;
         let w_row = &w[row_start..row_start + n];
         let mut sum = 0.0f32;
         for (wi, ai) in w_row.iter().zip(act.iter()) {
             sum += *wi as f32 * *ai;
         }
-        output[row] = sum;
+        *out = sum;
     }
     Ok(PyArray1::from_vec_bound(py, output))
 }
@@ -281,7 +281,7 @@ fn ternary_gemv_cpu_packed<'py>(
 
     let mut output = vec![0.0f32; m];
 
-    for row in 0..m {
+    for (row, out) in output.iter_mut().enumerate().take(m) {
         let row_start = row * packed_cols;
         let mut sum = 0.0f32;
 
@@ -347,7 +347,7 @@ fn ternary_gemv_cpu_packed<'py>(
             sum += u0 + u1;
         }
 
-        output[row] = sum;
+        *out = sum;
     }
 
     Ok(PyArray1::from_vec_bound(py, output))
