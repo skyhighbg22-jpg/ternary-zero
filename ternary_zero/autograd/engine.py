@@ -47,6 +47,7 @@ def backward(tensor: Tensor, gradient: Optional[Tensor] = None):
         if grad_output is None:
             continue
 
+        fn.__class__._validate_version(fn)
         grads = fn.__class__.backward(fn, grad_output.data if isinstance(grad_output, Tensor) else grad_output)
 
         if grads is None:
@@ -83,18 +84,22 @@ def backward(tensor: Tensor, gradient: Optional[Tensor] = None):
                 inp._grad.data += grad_tensor.data
 
 
-def _build_topo(node, visited, topo_order):
-    node_id = id(node)
-    if node_id in visited:
-        return
-    visited.add(node_id)
-
-    if node._grad_fn is not None:
-        for inp in node._grad_fn._inputs:
-            if isinstance(inp, Tensor) and inp.requires_grad:
-                _build_topo(inp, visited, topo_order)
-
-    topo_order.append(node)
+def _build_topo(root, visited, topo_order):
+    stack = [(root, False)]
+    while stack:
+        node, post = stack.pop()
+        node_id = id(node)
+        if post:
+            topo_order.append(node)
+            continue
+        if node_id in visited:
+            continue
+        visited.add(node_id)
+        stack.append((node, True))
+        if node._grad_fn is not None:
+            for inp in node._grad_fn._inputs:
+                if isinstance(inp, Tensor) and inp.requires_grad and id(inp) not in visited:
+                    stack.append((inp, False))
 
 
 def _unbroadcast(grad, target_shape):

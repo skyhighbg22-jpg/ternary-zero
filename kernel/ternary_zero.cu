@@ -24,6 +24,7 @@
 
 #include <cuda_fp16.h>
 #include <cstdint>
+#include <type_traits>
 
 // =====================================================================
 // Configuration Constants
@@ -61,9 +62,51 @@ __device__ __forceinline__ float warp_reduce_sum_f32(float val) {
 }
 
 // =====================================================================
-// Main Kernel: Ternary-Zero GEMV
+// FP16 Warp Shuffle Reduction
 // =====================================================================
 
+__device__ __forceinline__ half warp_reduce_sum_f16(half val) {
+    #pragma unroll
+    for (int offset = 16; offset >= 1; offset >>= 1) {
+        uint32_t raw = (uint32_t)__half_as_ushort(val);
+        uint32_t other_raw = __shfl_down_sync(0xFFFFFFFF, raw, offset);
+        val = __hadd(val, __ushort_as_half((unsigned short)other_raw));
+    }
+    return val;
+}
+
+// =====================================================================
+// Accumulation Precision Traits
+// =====================================================================
+
+template <bool Fp32Acc>
+struct AccOps;
+
+template <>
+struct AccOps<true> {
+    using type = float;
+    __device__ __forceinline__ static float init() { return 0.0f; }
+    __device__ __forceinline__ static float from_half(half h) { return __half2float(h); }
+    __device__ __forceinline__ static float add(float a, float b) { return a + b; }
+    __device__ __forceinline__ static float warp_reduce(float v) { return warp_reduce_sum_f32(v); }
+    __device__ __forceinline__ static half to_half(float v) { return __float2half(v); }
+};
+
+template <>
+struct AccOps<false> {
+    using type = half;
+    __device__ __forceinline__ static half init() { return __float2half(0.0f); }
+    __device__ __forceinline__ static half from_half(half h) { return h; }
+    __device__ __forceinline__ static half add(half a, half b) { return __hadd(a, b); }
+    __device__ __forceinline__ static half warp_reduce(half v) { return warp_reduce_sum_f16(v); }
+    __device__ __forceinline__ static half to_half(half v) { return v; }
+};
+
+// =====================================================================
+// Main Kernel: Ternary-Zero GEMV (Templated on Accumulation Precision)
+// =====================================================================
+
+template <bool Fp32Acc = true>
 __global__ void __launch_bounds__(BLOCK_SIZE, 4)
 ternary_zero_gemv_kernel(
     const uint32_t* __restrict__ weights,
@@ -79,13 +122,16 @@ ternary_zero_gemv_kernel(
 
     if (row >= M) return;
 
+    using AccT = typename std::conditional<Fp32Acc, float, half>::type;
+
     __shared__ __half s_act[PADDED_TILE_SIZE];
-    __shared__ float  s_warp_sums[WARPS_PER_BLOCK];
+    __shared__ float  s_warp_sums_f32[WARPS_PER_BLOCK];
+    __shared__ half   s_warp_sums_f16[WARPS_PER_BLOCK];
 
     const int packed_cols = N / WEIGHTS_PER_UINT32;
     const uint32_t* row_weights = weights + (size_t)row * packed_cols;
 
-    float acc = 0.0f;
+    AccT acc = AccOps<Fp32Acc>::init();
 
     for (int tile_start = 0; tile_start < N; tile_start += ACT_TILE_SIZE) {
 
@@ -164,32 +210,62 @@ ternary_zero_gemv_kernel(
                 uint32_t gated_a0 = signed_a0 & nz_mask_w0;
                 uint32_t gated_a1 = signed_a1 & nz_mask_w1;
 
-                float v0 = __half2float(__ushort_as_half((unsigned short)(gated_a0 & 0xFFFF)));
-                float v1 = __half2float(__ushort_as_half((unsigned short)(gated_a1 & 0xFFFF)));
-                acc += v0 + v1;
+                if constexpr (Fp32Acc) {
+                    float v0 = __half2float(__ushort_as_half((unsigned short)(gated_a0 & 0xFFFF)));
+                    float v1 = __half2float(__ushort_as_half((unsigned short)(gated_a1 & 0xFFFF)));
+                    acc += v0 + v1;
+                } else {
+                    half v0 = __ushort_as_half((unsigned short)(gated_a0 & 0xFFFF));
+                    half v1 = __ushort_as_half((unsigned short)(gated_a1 & 0xFFFF));
+                    acc = __hadd(acc, __hadd(v0, v1));
+                }
             }
         }
 
         __syncthreads();
     }
 
-    acc = warp_reduce_sum_f32(acc);
-
-    if (lane_id == 0) {
-        s_warp_sums[warp_id] = acc;
-    }
-    __syncthreads();
-
-    if (warp_id == 0) {
-        float block_sum = (lane_id < WARPS_PER_BLOCK) ? s_warp_sums[lane_id]
-                                                       : 0.0f;
-        #pragma unroll
-        for (int offset = WARPS_PER_BLOCK / 2; offset >= 1; offset >>= 1) {
-            block_sum += __shfl_down_sync(0xFFFFFFFF, block_sum, offset);
-        }
+    if constexpr (Fp32Acc) {
+        acc = warp_reduce_sum_f32(acc);
 
         if (lane_id == 0) {
-            output[row] = __float2half(block_sum);
+            s_warp_sums_f32[warp_id] = acc;
+        }
+        __syncthreads();
+
+        if (warp_id == 0) {
+            float block_sum = (lane_id < WARPS_PER_BLOCK) ? s_warp_sums_f32[lane_id]
+                                                           : 0.0f;
+            #pragma unroll
+            for (int offset = WARPS_PER_BLOCK / 2; offset >= 1; offset >>= 1) {
+                block_sum += __shfl_down_sync(0xFFFFFFFF, block_sum, offset);
+            }
+
+            if (lane_id == 0) {
+                output[row] = __float2half(block_sum);
+            }
+        }
+    } else {
+        acc = warp_reduce_sum_f16(acc);
+
+        if (lane_id == 0) {
+            s_warp_sums_f16[warp_id] = acc;
+        }
+        __syncthreads();
+
+        if (warp_id == 0) {
+            half block_sum = (lane_id < WARPS_PER_BLOCK) ? s_warp_sums_f16[lane_id]
+                                                          : __float2half(0.0f);
+            #pragma unroll
+            for (int offset = WARPS_PER_BLOCK / 2; offset >= 1; offset >>= 1) {
+                uint32_t raw = (uint32_t)__half_as_ushort(block_sum);
+                uint32_t other_raw = __shfl_down_sync(0xFFFFFFFF, raw, offset);
+                block_sum = __hadd(block_sum, __ushort_as_half((unsigned short)other_raw));
+            }
+
+            if (lane_id == 0) {
+                output[row] = block_sum;
+            }
         }
     }
 }
@@ -237,9 +313,39 @@ cudaError_t ternary_zero_gemv_f16(
     dim3 grid(M, 1, 1);
     dim3 block(BLOCK_SIZE, 1, 1);
 
-    ternary_zero_gemv_kernel<<<grid, block, 0, stream>>>(
+    ternary_zero_gemv_kernel<true><<<grid, block, 0, stream>>>(
         weights, activations, output, M, N
     );
+
+    return cudaGetLastError();
+}
+
+extern "C"
+cudaError_t ternary_zero_gemv_f16_ex(
+    const uint32_t* __restrict__ weights,
+    const __half*   __restrict__ activations,
+    __half*         __restrict__ output,
+    int M,
+    int N,
+    cudaStream_t stream,
+    int use_fp32_acc
+) {
+    if (M <= 0 || N <= 0 || N % WEIGHTS_PER_UINT32 != 0) {
+        return cudaErrorInvalidValue;
+    }
+
+    dim3 grid(M, 1, 1);
+    dim3 block(BLOCK_SIZE, 1, 1);
+
+    if (use_fp32_acc) {
+        ternary_zero_gemv_kernel<true><<<grid, block, 0, stream>>>(
+            weights, activations, output, M, N
+        );
+    } else {
+        ternary_zero_gemv_kernel<false><<<grid, block, 0, stream>>>(
+            weights, activations, output, M, N
+        );
+    }
 
     return cudaGetLastError();
 }

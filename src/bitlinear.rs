@@ -7,7 +7,7 @@ use crate::ffi::{
 #[cfg(not(no_cuda))]
 use half::f16;
 #[cfg(not(no_cuda))]
-use std::os::raw::c_void;
+use std::os::raw::{c_int, c_void};
 #[cfg(not(no_cuda))]
 use std::ptr;
 #[cfg(not(no_cuda))]
@@ -682,6 +682,7 @@ pub struct BitLinear {
     m: usize,
     n: usize,
     l2_pinned: bool,
+    use_fp32_acc: bool,
 }
 
 #[cfg(not(no_cuda))]
@@ -722,6 +723,7 @@ impl BitLinear {
             m,
             n,
             l2_pinned: false,
+            use_fp32_acc: true,
         })
     }
 
@@ -778,13 +780,14 @@ impl BitLinear {
         d_act.copy_from_host(&act_u16)?;
 
         unsafe {
-            ffi::ternary_zero_gemv_f16(
+            ffi::ternary_zero_gemv_f16_ex(
                 self.packed_weights.as_ptr(),
                 d_act.as_ptr(),
                 self.output_buffer.as_mut_ptr(),
                 self.m as i32,
                 self.n as i32,
                 self.stream.raw(),
+                self.use_fp32_acc as c_int,
             )
         }
         .to_result()?;
@@ -822,13 +825,14 @@ impl BitLinear {
         d_act.copy_from_host_async(&act_u16, &self.stream)?;
 
         unsafe {
-            ffi::ternary_zero_gemv_f16(
+            ffi::ternary_zero_gemv_f16_ex(
                 self.packed_weights.as_ptr(),
                 d_act.as_ptr(),
                 self.output_buffer.as_mut_ptr(),
                 self.m as i32,
                 self.n as i32,
                 self.stream.raw(),
+                self.use_fp32_acc as c_int,
             )
         }
         .to_result()?;
@@ -860,6 +864,10 @@ impl BitLinear {
 
     pub fn dimensions(&self) -> (usize, usize) {
         (self.m, self.n)
+    }
+
+    pub fn set_accumulation_precision(&mut self, use_fp32_acc: bool) {
+        self.use_fp32_acc = use_fp32_acc;
     }
 }
 

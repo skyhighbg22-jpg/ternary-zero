@@ -221,6 +221,16 @@ extern "C" {
         stream: cudaStream_t,
     ) -> CudaError;
 
+    pub fn ternary_zero_gemv_f16_ex(
+        weights: *const u32,
+        activations: *const u16,
+        output: *mut u16,
+        m: c_int,
+        n: c_int,
+        stream: cudaStream_t,
+        use_fp32_acc: c_int,
+    ) -> CudaError;
+
     pub fn ternary_zero_set_l2_policy(
         stream: cudaStream_t,
         base_ptr: *const c_void,

@@ -4,6 +4,8 @@
 #include <cuda_fp16.h>
 #include <cstdint>
 
+#ifdef __CUDA_ARCH__
+
 // =====================================================================
 // PTX Bit-Manipulation Macros for 2-Bit Ternary Weight Decompression
 // =====================================================================
@@ -87,5 +89,7 @@ __device__ __forceinline__ half2 zero_gate_accumulate_ptx(
     half2 result = __hadd2(accumulator, contribution);
     return result;
 }
+
+#endif // __CUDA_ARCH__
 
 #endif // PTX_UTILS_H

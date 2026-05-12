@@ -12,6 +12,7 @@ if has_torch():
 
 
 class Function:
+    _version: int = 1
     _saved_tensors: tuple = ()
 
     def __init__(self):
@@ -46,6 +47,7 @@ class Function:
             return Tensor(result)
 
         ctx = cls()
+        ctx._version = cls._version
         ctx.needs_input_grad = tuple(
             isinstance(t, Tensor) and t.requires_grad for t in inputs
         )
@@ -84,3 +86,13 @@ class Function:
     @staticmethod
     def _forward(ctx, *inputs, **kwargs):
         raise NotImplementedError
+
+    @classmethod
+    def _validate_version(cls, ctx):
+        stored = getattr(ctx, '_version', None)
+        if stored is not None and stored != cls._version:
+            raise RuntimeError(
+                f"Version mismatch for {cls.__name__}: "
+                f"forward used v{stored}, but current is v{cls._version}. "
+                f"Re-run the forward pass before calling backward."
+            )

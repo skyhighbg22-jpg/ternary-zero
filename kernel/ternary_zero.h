@@ -38,6 +38,16 @@ cudaError_t ternary_zero_gemv_f16(
     cudaStream_t stream
 );
 
+cudaError_t ternary_zero_gemv_f16_ex(
+    const uint32_t* __restrict__ weights,
+    const __half*   __restrict__ activations,
+    __half*         __restrict__ output,
+    int M,
+    int N,
+    cudaStream_t stream,
+    int use_fp32_acc
+);
+
 // =====================================================================
 // L2 Cache Policy: Pin weight tiles in L2 for repeated access
 // =====================================================================
