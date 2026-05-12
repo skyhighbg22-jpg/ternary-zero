@@ -22,6 +22,7 @@ pub use ste::{
 
 use ndarray::Array2;
 use numpy::{PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2};
+#[cfg(not(no_cuda))]
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 

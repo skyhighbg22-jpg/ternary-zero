@@ -66,6 +66,7 @@ fn find_msvc_bin() -> Option<PathBuf> {
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rustc-check-cfg=cfg(no_cuda)");
 
     if cfg!(feature = "cpu-only") {
         println!("cargo:warning=cpu-only feature enabled, skipping CUDA kernel compilation");
