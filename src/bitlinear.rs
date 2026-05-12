@@ -600,6 +600,10 @@ impl CudaEvent {
         let err = unsafe { ffi::cudaEventQuery(self.0) };
         err == ffi::CudaError::Success
     }
+
+    pub fn raw(&self) -> cudaEvent_t {
+        self.0
+    }
 }
 
 #[cfg(not(no_cuda))]

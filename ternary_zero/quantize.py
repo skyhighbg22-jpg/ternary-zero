@@ -125,3 +125,104 @@ def ternary_weight_analysis(weights: Tensor) -> dict:
         "compression_ratio_vs_fp32": 16.0,
         "compression_ratio_vs_fp16": 8.0,
     }
+
+
+# =====================================================================
+# NumPy-Vectorized CPU Ternary GEMV (High-Performance Fallback)
+# =====================================================================
+#
+# Operates directly on packed u32 weights using vectorized NumPy ops.
+# This is the pure-Python/NumPy CPU fallback for environments without
+# the Rust native extension or CUDA (e.g., GitHub Actions CI runners).
+#
+# Encoding: 00=0, 01=+1, 10=-1, packed LSB-first into u32.
+
+_TERNARY_LUT = np.array([0.0, 1.0, -1.0, 0.0], dtype=np.float32)
+
+
+def ternary_gemv_numpy(
+    packed_weights: np.ndarray,
+    activations: np.ndarray,
+    m: int,
+    n: int,
+) -> np.ndarray:
+    """High-performance NumPy-vectorized ternary GEMV on packed u32 weights.
+
+    Computes: output[m] = sum_n(decode_ternary(packed[m, n/16]) * act[n])
+
+    Args:
+        packed_weights: Flat u32 array of shape [M * (N/16)].
+        activations:    FP32 array of shape [N].
+        m:              Number of output rows.
+        n:              Number of input features (must be multiple of 16).
+
+    Returns:
+        FP32 array of shape [M].
+    """
+    if n % 16 != 0:
+        raise ValueError(f"N must be multiple of 16, got {n}")
+
+    pw = np.asarray(packed_weights, dtype=np.uint32).ravel()
+    act = np.asarray(activations, dtype=np.float32).ravel()
+    packed_cols = n // 16
+
+    if pw.size != m * packed_cols:
+        raise ValueError(
+            f"packed_weights size {pw.size} != M*(N/16) = {m * packed_cols}"
+        )
+    if act.size != n:
+        raise ValueError(f"activations size {act.size} != N = {n}")
+
+    pw_2d = pw.reshape(m, packed_cols)
+
+    decoded = np.empty((m, n), dtype=np.float32)
+    for bit in range(16):
+        bits = (pw_2d >> np.uint32(bit * 2)) & np.uint32(0b11)
+        decoded[:, bit::16] = _TERNARY_LUT[bits]
+
+    return decoded @ act
+
+
+def ternary_gemm_numpy(
+    packed_weights: np.ndarray,
+    activations: np.ndarray,
+    m: int,
+    k: int,
+    n: int,
+) -> np.ndarray:
+    """High-performance NumPy-vectorized ternary GEMM on packed u32 weights.
+
+    Computes: output[m, n] = sum_k(decode_ternary(packed[m, k/16]) * act[k, n])
+
+    Args:
+        packed_weights: Flat u32 array of shape [M * (K/16)].
+        activations:    FP32 array of shape [K, N].
+        m:              Number of output rows.
+        k:              Number of input features (must be multiple of 16).
+        n:              Number of output columns.
+
+    Returns:
+        FP32 array of shape [M, N].
+    """
+    if k % 16 != 0:
+        raise ValueError(f"K must be multiple of 16, got {k}")
+
+    pw = np.asarray(packed_weights, dtype=np.uint32).ravel()
+    act = np.asarray(activations, dtype=np.float32)
+    packed_cols = k // 16
+
+    if pw.size != m * packed_cols:
+        raise ValueError(
+            f"packed_weights size {pw.size} != M*(K/16) = {m * packed_cols}"
+        )
+    if act.shape != (k, n):
+        raise ValueError(f"activations shape {act.shape} != ({k}, {n})")
+
+    pw_2d = pw.reshape(m, packed_cols)
+
+    decoded = np.empty((m, k), dtype=np.float32)
+    for bit in range(16):
+        bits = (pw_2d >> np.uint32(bit * 2)) & np.uint32(0b11)
+        decoded[:, bit::16] = _TERNARY_LUT[bits]
+
+    return decoded @ act
