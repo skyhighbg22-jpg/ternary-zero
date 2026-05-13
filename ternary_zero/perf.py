@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
-from typing import Dict, Mapping, Optional
+from typing import Dict, Mapping, Optional, Sequence
+
+import numpy as np
 
 
 def _clamp_unit(value: float) -> float:
@@ -137,6 +139,78 @@ class GemvComparison:
             "speedup_vs_fp16": self.speedup_vs_fp16,
             "compression_ratio_vs_fp16": self.compression_ratio_vs_fp16,
             "ideal_arithmetic_speedup": self.ideal_arithmetic_speedup,
+        }
+
+
+@dataclass(frozen=True)
+class ScalingObservation:
+    kernel: str
+    m: int
+    n: int
+    sparsity: float
+    latency_us: float
+    weight_bytes: float
+    useful_ops: float
+    total_bytes: float
+    nonzero_fraction: float
+
+    def to_dict(self) -> Dict[str, float]:
+        return {
+            "kernel": self.kernel,
+            "m": self.m,
+            "n": self.n,
+            "sparsity": self.sparsity,
+            "latency_us": self.latency_us,
+            "weight_bytes": self.weight_bytes,
+            "useful_ops": self.useful_ops,
+            "total_bytes": self.total_bytes,
+            "nonzero_fraction": self.nonzero_fraction,
+        }
+
+
+@dataclass(frozen=True)
+class ScalingFit:
+    kernel: str
+    intercept_us: float
+    us_per_weight_byte: float
+    us_per_useful_op: float
+    r2: float
+    rmse_us: float
+    mae_us: float
+    num_observations: int
+
+    def to_dict(self) -> Dict[str, float]:
+        return {
+            "kernel": self.kernel,
+            "intercept_us": self.intercept_us,
+            "us_per_weight_byte": self.us_per_weight_byte,
+            "us_per_useful_op": self.us_per_useful_op,
+            "r2": self.r2,
+            "rmse_us": self.rmse_us,
+            "mae_us": self.mae_us,
+            "num_observations": self.num_observations,
+        }
+
+
+@dataclass(frozen=True)
+class SparsityFit:
+    kernel: str
+    intercept_us: float
+    us_per_nonzero_fraction: float
+    r2: float
+    rmse_us: float
+    mae_us: float
+    num_observations: int
+
+    def to_dict(self) -> Dict[str, float]:
+        return {
+            "kernel": self.kernel,
+            "intercept_us": self.intercept_us,
+            "us_per_nonzero_fraction": self.us_per_nonzero_fraction,
+            "r2": self.r2,
+            "rmse_us": self.rmse_us,
+            "mae_us": self.mae_us,
+            "num_observations": self.num_observations,
         }
 
 
@@ -358,4 +432,112 @@ def compare_ternary_fp16(
         speedup_vs_fp16=speedup,
         compression_ratio_vs_fp16=8.0,
         ideal_arithmetic_speedup=ideal_arithmetic_speedup,
+    )
+
+
+def projection_to_observation(
+    shape: GemvShape,
+    projection: GemvProjection,
+) -> ScalingObservation:
+    return ScalingObservation(
+        kernel=projection.kernel,
+        m=shape.m,
+        n=shape.n,
+        sparsity=shape.sparsity,
+        latency_us=projection.projected_latency_us,
+        weight_bytes=projection.weight_bytes,
+        useful_ops=projection.useful_ops,
+        total_bytes=projection.total_bytes,
+        nonzero_fraction=projection.nonzero_fraction,
+    )
+
+
+def fit_latency_scaling_law(
+    observations: Sequence[ScalingObservation],
+    kernel: Optional[str] = None,
+) -> ScalingFit:
+    if not observations:
+        raise ValueError("at least one observation is required")
+
+    filtered = [
+        obs for obs in observations
+        if kernel is None or obs.kernel == kernel
+    ]
+    if not filtered:
+        raise ValueError("no observations matched the requested kernel")
+
+    x = np.array(
+        [[1.0, obs.weight_bytes, obs.useful_ops] for obs in filtered],
+        dtype=np.float64,
+    )
+    y = np.array([obs.latency_us for obs in filtered], dtype=np.float64)
+    coeffs, _, _, _ = np.linalg.lstsq(x, y, rcond=None)
+    pred = x @ coeffs
+    residual = y - pred
+    ss_res = float(np.sum(residual ** 2))
+    ss_tot = float(np.sum((y - np.mean(y)) ** 2))
+    r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else 1.0
+    rmse = float(np.sqrt(np.mean(residual ** 2)))
+    mae = float(np.mean(np.abs(residual)))
+
+    return ScalingFit(
+        kernel=filtered[0].kernel if kernel is None else kernel,
+        intercept_us=float(coeffs[0]),
+        us_per_weight_byte=float(coeffs[1]),
+        us_per_useful_op=float(coeffs[2]),
+        r2=r2,
+        rmse_us=rmse,
+        mae_us=mae,
+        num_observations=len(filtered),
+    )
+
+
+def predict_latency_from_scaling(
+    fit: ScalingFit,
+    weight_bytes: float,
+    useful_ops: float,
+) -> float:
+    return (
+        fit.intercept_us
+        + fit.us_per_weight_byte * float(weight_bytes)
+        + fit.us_per_useful_op * float(useful_ops)
+    )
+
+
+def fit_sparsity_scaling_law(
+    observations: Sequence[ScalingObservation],
+    kernel: Optional[str] = None,
+) -> SparsityFit:
+    if not observations:
+        raise ValueError("at least one observation is required")
+
+    filtered = [
+        obs for obs in observations
+        if kernel is None or obs.kernel == kernel
+    ]
+    if not filtered:
+        raise ValueError("no observations matched the requested kernel")
+
+    x = np.array(
+        [[1.0, obs.nonzero_fraction] for obs in filtered],
+        dtype=np.float64,
+    )
+    y = np.array([obs.latency_us for obs in filtered], dtype=np.float64)
+    coeffs, _, _, _ = np.linalg.lstsq(x, y, rcond=None)
+    pred = x @ coeffs
+    residual = y - pred
+    ss_res = float(np.sum(residual ** 2))
+    ss_tot = float(np.sum((y - np.mean(y)) ** 2))
+    r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else 1.0
+    rmse = float(np.sqrt(np.mean(residual ** 2)))
+    mae = float(np.mean(np.abs(residual)))
+
+    return SparsityFit(
+        kernel=filtered[0].kernel if kernel is None else kernel,
+        intercept_us=float(coeffs[0]),
+        us_per_nonzero_fraction=float(coeffs[1]),
+        r2=r2,
+        rmse_us=rmse,
+        mae_us=mae,
+        num_observations=len(filtered),
     )

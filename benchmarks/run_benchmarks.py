@@ -27,8 +27,12 @@ from ternary_zero.perf import (
     HardwareSpec,
     MemoryTierFractions,
     compare_ternary_fp16,
+    fit_latency_scaling_law,
+    fit_sparsity_scaling_law,
     occupancy_ratio,
+    projection_to_observation,
 )
+from power_monitor import PowerSampler, energy_per_token_mj
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -80,7 +84,15 @@ def log_system_info(info):
 # Benchmark 1: Per-Step Latency Curves (training)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def bench_latency_curves(impl_name, run_fn, steps=20, num_runs=3):
+def bench_latency_curves(
+    impl_name,
+    run_fn,
+    steps=20,
+    num_runs=3,
+    sample_power=False,
+    power_interval_s=0.1,
+    gpu_index=0,
+):
     """Measure training latency with warmup and repeated runs for real statistics.
 
     Runs a warmup invocation (discarded), then num_runs measured invocations.
@@ -96,11 +108,21 @@ def bench_latency_curves(impl_name, run_fn, steps=20, num_runs=3):
     print(" done.", flush=True)
 
     run_latencies = []
+    run_avg_power = []
+    run_energy_j = []
     final_r = None
     for run_i in range(num_runs):
         print(f"    [run {run_i + 1}/{num_runs}] {steps} steps...", end="", flush=True)
-        r = run_fn(num_train_steps=steps, num_inference_samples=3)
+        with PowerSampler(
+            enabled=sample_power,
+            interval_s=power_interval_s,
+            gpu_index=gpu_index,
+        ) as power_sampler:
+            r = run_fn(num_train_steps=steps, num_inference_samples=3)
+        power_summary = power_sampler.summary()
         run_latencies.append(r["train_avg_step_ms"])
+        run_avg_power.append(power_summary["avg_power_w"])
+        run_energy_j.append(power_summary["energy_j"])
         final_r = r
         print(f" {r['train_avg_step_ms']:.1f} ms/step", flush=True)
 
@@ -114,6 +136,8 @@ def bench_latency_curves(impl_name, run_fn, steps=20, num_runs=3):
         "std_ms": statistics.stdev(run_latencies) if len(run_latencies) > 1 else 0.0,
         "measurement_type": "per_run_aggregate",
         "num_runs": num_runs,
+        "run_avg_power_w": run_avg_power,
+        "run_energy_j": run_energy_j,
         "raw_results": final_r,
     }
 
@@ -121,9 +145,27 @@ def bench_latency_curves(impl_name, run_fn, steps=20, num_runs=3):
 # Benchmark 2: Throughput Scaling (vary sequence length)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def bench_throughput_scaling(impl_name, run_fn, steps=10):
+def bench_throughput_scaling(
+    impl_name,
+    run_fn,
+    steps=10,
+    sample_power=False,
+    power_interval_s=0.1,
+    gpu_index=0,
+):
     """Measure throughput at different effective sequence lengths."""
-    r = run_fn(num_train_steps=steps, num_inference_samples=5)
+    with PowerSampler(
+        enabled=sample_power,
+        interval_s=power_interval_s,
+        gpu_index=gpu_index,
+    ) as power_sampler:
+        r = run_fn(num_train_steps=steps, num_inference_samples=5)
+    power_summary = power_sampler.summary()
+    inference_energy_token_mj = energy_per_token_mj(
+        power_summary["avg_power_w"],
+        r.get("inference_total_time_s", 0.0),
+        r.get("inference_total_tokens", 0),
+    )
     # The model processes variable-length names (avg ~5-6 chars)
     # Measure tokens/sec at different inference counts
     return {
@@ -131,6 +173,9 @@ def bench_throughput_scaling(impl_name, run_fn, steps=10):
         "inference_throughput_tokens_s": r["inference_throughput_tokens_s"],
         "train_throughput_steps_s": r["train_throughput_steps_s"],
         "tokens_per_sample": r.get("inference_tokens_per_sample", []),
+        "avg_power_w": power_summary["avg_power_w"],
+        "energy_j": power_summary["energy_j"],
+        "inference_energy_per_token_mj": inference_energy_token_mj,
     }
 
 
@@ -216,6 +261,69 @@ def build_gemv_projection_suite(gpu_info):
     return projections
 
 
+def build_scaling_law_suite(gpu_info):
+    if not gpu_info or "error" in gpu_info:
+        return None
+
+    dram_gbps = gpu_info.get("theoretical_bandwidth_gbps", 0.0) or 272.0
+    max_threads_per_sm = gpu_info.get("max_threads_per_sm", 1536)
+    kernel_threads = min(256, gpu_info.get("max_threads_per_block", 256))
+    occ = occupancy_ratio(
+        min(4, max(1, int(max_threads_per_sm // kernel_threads))) * kernel_threads,
+        max_threads_per_sm,
+    )
+    hardware = HardwareSpec(
+        peak_compute_gops=8_500.0,
+        dram_bandwidth_gbps=dram_gbps,
+        l2_bandwidth_gbps=max(dram_gbps * 1.8, dram_gbps),
+        shared_bandwidth_gbps=max(dram_gbps * 8.0, dram_gbps),
+        average_power_w=75.0,
+    )
+    ms = [256, 1024, 4096]
+    ns = [768, 1024, 2048, 4096]
+    sparsities = [0.0, 0.25, 0.5, 0.75]
+    ternary_obs = []
+    fp16_obs = []
+
+    for m in ms:
+        for n in ns:
+            for sparsity in sparsities:
+                shape = GemvShape(m=m, n=n, sparsity=sparsity)
+                comparison = compare_ternary_fp16(
+                    shape=shape,
+                    hardware=hardware,
+                    occupancy=occ,
+                    warp_efficiency_value=1.0,
+                    ternary_memory_tiers=MemoryTierFractions(dram=0.9, l2=0.1, shared=0.0),
+                    fp16_memory_tiers=MemoryTierFractions(dram=0.95, l2=0.05, shared=0.0),
+                    decode_time_us=2.5,
+                    reduce_time_us=1.0,
+                    sync_time_us=0.5,
+                )
+                ternary_obs.append(projection_to_observation(shape, comparison.ternary))
+                fp16_obs.append(
+                    projection_to_observation(
+                        GemvShape(m=m, n=n, sparsity=0.0),
+                        comparison.fp16,
+                    )
+                )
+
+    ternary_fit = fit_latency_scaling_law(ternary_obs, kernel="ternary")
+    fp16_fit = fit_latency_scaling_law(fp16_obs, kernel="fp16")
+    sparsity_fit = fit_sparsity_scaling_law(ternary_obs, kernel="ternary")
+    return {
+        "ternary_latency_fit": ternary_fit.to_dict(),
+        "fp16_latency_fit": fp16_fit.to_dict(),
+        "ternary_sparsity_fit": sparsity_fit.to_dict(),
+        "num_observations": len(ternary_obs),
+        "sweep_axes": {
+            "M": ms,
+            "N": ns,
+            "sparsity": sparsities,
+        },
+    }
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Main Runner
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -226,6 +334,12 @@ def main():
     parser.add_argument("--inference-samples", type=int, default=5)
     parser.add_argument("--num-runs", type=int, default=3,
                         help="Number of measured runs per implementation (after warmup)")
+    parser.add_argument("--sample-power", action="store_true",
+                        help="Sample GPU power with nvidia-smi during benchmark runs")
+    parser.add_argument("--power-interval-ms", type=float, default=100.0,
+                        help="Polling interval for GPU power sampling")
+    parser.add_argument("--gpu-index", type=int, default=0,
+                        help="GPU index for nvidia-smi power queries")
     args = parser.parse_args()
 
     sys_info = get_system_info()
@@ -233,20 +347,28 @@ def main():
     print(f"  train_steps: {args.train_steps}")
     print(f"  inference_samples: {args.inference_samples}")
     print(f"  num_runs: {args.num_runs}")
+    print(f"  sample_power: {args.sample_power}")
     print()
     sys.stdout.flush()
 
     all_latency = []
     all_throughput = []
     all_raw = {}
+    power_interval_s = args.power_interval_ms / 1000.0
 
     # ── 1. Pure Python ──
     print("\n[1/6] Pure Python (baseline)...")
     sys.stdout.flush()
     try:
         from impl_pure_python import run_benchmark as run_pure
-        lc = bench_latency_curves("pure_python", run_pure, args.train_steps, args.num_runs)
-        ts = bench_throughput_scaling("pure_python", run_pure, min(args.train_steps, 10))
+        lc = bench_latency_curves(
+            "pure_python", run_pure, args.train_steps, args.num_runs,
+            sample_power=args.sample_power, power_interval_s=power_interval_s, gpu_index=args.gpu_index,
+        )
+        ts = bench_throughput_scaling(
+            "pure_python", run_pure, min(args.train_steps, 10),
+            sample_power=args.sample_power, power_interval_s=power_interval_s, gpu_index=args.gpu_index,
+        )
         all_latency.append(lc)
         all_throughput.append(ts)
         all_raw["pure_python"] = lc["raw_results"]
@@ -260,8 +382,14 @@ def main():
     sys.stdout.flush()
     try:
         from impl_numpy import run_benchmark as run_numpy
-        lc = bench_latency_curves("numpy", run_numpy, args.train_steps, args.num_runs)
-        ts = bench_throughput_scaling("numpy", run_numpy, min(args.train_steps, 10))
+        lc = bench_latency_curves(
+            "numpy", run_numpy, args.train_steps, args.num_runs,
+            sample_power=args.sample_power, power_interval_s=power_interval_s, gpu_index=args.gpu_index,
+        )
+        ts = bench_throughput_scaling(
+            "numpy", run_numpy, min(args.train_steps, 10),
+            sample_power=args.sample_power, power_interval_s=power_interval_s, gpu_index=args.gpu_index,
+        )
         all_latency.append(lc)
         all_throughput.append(ts)
         all_raw["numpy"] = lc["raw_results"]
@@ -275,8 +403,14 @@ def main():
     sys.stdout.flush()
     try:
         from impl_pytorch import run_benchmark as run_torch, DEVICE
-        lc = bench_latency_curves("pytorch", run_torch, args.train_steps, args.num_runs)
-        ts = bench_throughput_scaling("pytorch", run_torch, min(args.train_steps, 10))
+        lc = bench_latency_curves(
+            "pytorch", run_torch, args.train_steps, args.num_runs,
+            sample_power=args.sample_power, power_interval_s=power_interval_s, gpu_index=args.gpu_index,
+        )
+        ts = bench_throughput_scaling(
+            "pytorch", run_torch, min(args.train_steps, 10),
+            sample_power=args.sample_power, power_interval_s=power_interval_s, gpu_index=args.gpu_index,
+        )
         all_latency.append(lc)
         all_throughput.append(ts)
         all_raw["pytorch"] = lc["raw_results"]
@@ -290,8 +424,15 @@ def main():
     sys.stdout.flush()
     try:
         from impl_ternary_zero import run_benchmark as run_tz
-        lc = bench_latency_curves("ternary_zero", lambda **kw: run_tz(use_bitlinear=False, **kw), args.train_steps, args.num_runs)
-        ts = bench_throughput_scaling("ternary_zero", lambda **kw: run_tz(use_bitlinear=False, **kw), min(args.train_steps, 10))
+        lc = bench_latency_curves(
+            "ternary_zero", lambda **kw: run_tz(use_bitlinear=False, **kw),
+            args.train_steps, args.num_runs,
+            sample_power=args.sample_power, power_interval_s=power_interval_s, gpu_index=args.gpu_index,
+        )
+        ts = bench_throughput_scaling(
+            "ternary_zero", lambda **kw: run_tz(use_bitlinear=False, **kw), min(args.train_steps, 10),
+            sample_power=args.sample_power, power_interval_s=power_interval_s, gpu_index=args.gpu_index,
+        )
         all_latency.append(lc)
         all_throughput.append(ts)
         all_raw["ternary_zero"] = lc["raw_results"]
@@ -304,8 +445,15 @@ def main():
     print("\n[5/6] Ternary-Zero BitLinear (2-bit ternary quantized)...")
     sys.stdout.flush()
     try:
-        lc = bench_latency_curves("tz_bitlinear", lambda **kw: run_tz(use_bitlinear=True, **kw), args.train_steps, args.num_runs)
-        ts = bench_throughput_scaling("tz_bitlinear", lambda **kw: run_tz(use_bitlinear=True, **kw), min(args.train_steps, 10))
+        lc = bench_latency_curves(
+            "tz_bitlinear", lambda **kw: run_tz(use_bitlinear=True, **kw),
+            args.train_steps, args.num_runs,
+            sample_power=args.sample_power, power_interval_s=power_interval_s, gpu_index=args.gpu_index,
+        )
+        ts = bench_throughput_scaling(
+            "tz_bitlinear", lambda **kw: run_tz(use_bitlinear=True, **kw), min(args.train_steps, 10),
+            sample_power=args.sample_power, power_interval_s=power_interval_s, gpu_index=args.gpu_index,
+        )
         all_latency.append(lc)
         all_throughput.append(ts)
         all_raw["tz_bitlinear"] = lc["raw_results"]
@@ -319,8 +467,14 @@ def main():
     sys.stdout.flush()
     try:
         from impl_cupy import run_benchmark as run_cupy
-        lc = bench_latency_curves("cupy", run_cupy, args.train_steps, args.num_runs)
-        ts = bench_throughput_scaling("cupy", run_cupy, min(args.train_steps, 10))
+        lc = bench_latency_curves(
+            "cupy", run_cupy, args.train_steps, args.num_runs,
+            sample_power=args.sample_power, power_interval_s=power_interval_s, gpu_index=args.gpu_index,
+        )
+        ts = bench_throughput_scaling(
+            "cupy", run_cupy, min(args.train_steps, 10),
+            sample_power=args.sample_power, power_interval_s=power_interval_s, gpu_index=args.gpu_index,
+        )
         gpu_occ = bench_gpu_occupancy()
         all_latency.append(lc)
         all_throughput.append(ts)
@@ -357,10 +511,14 @@ def main():
 
     # Throughput table
     print("\n--- Throughput Scaling ---")
-    print(f"{'Implementation':<20} {'Train (steps/s)':<18} {'Inf (tokens/s)':<18}")
-    print("-" * 56)
+    print(f"{'Implementation':<20} {'Train (steps/s)':<18} {'Inf (tokens/s)':<18} {'mJ/token':<12}")
+    print("-" * 72)
     for ts in all_throughput:
-        print(f"{ts['implementation']:<20} {ts['train_throughput_steps_s']:<18.2f} {ts['inference_throughput_tokens_s']:<18.1f}")
+        print(
+            f"{ts['implementation']:<20} {ts['train_throughput_steps_s']:<18.2f} "
+            f"{ts['inference_throughput_tokens_s']:<18.1f} "
+            f"{ts['inference_energy_per_token_mj']:<12.3f}"
+        )
 
     # Latency data
     print("\n--- Latency (per-run mean ms/step) ---")
@@ -368,9 +526,10 @@ def main():
         impl = lc["implementation"]
         runs = lc["run_latencies_ms"]
         runs_str = ", ".join(f"{x:.1f}" for x in runs)
+        power_runs = ", ".join(f"{x:.1f}" for x in lc.get("run_avg_power_w", [])) or "n/a"
         print(f"  {impl}: mean={lc['mean_ms']:.1f}  std={lc['std_ms']:.1f}  "
               f"median={lc['median_ms']:.1f}  p95={lc['p95_ms']:.1f}  "
-              f"runs=[{runs_str}]")
+              f"runs=[{runs_str}]  power=[{power_runs}]")
 
     # GPU occupancy
     if "cupy_gpu_occupancy" in all_raw:
@@ -389,6 +548,7 @@ def main():
             print(f"  Used VRAM:        {occ['gpu_used_mem_mb']:.1f} MB")
 
     gemv_projection_suite = build_gemv_projection_suite(all_raw.get("cupy_gpu_occupancy"))
+    scaling_law_suite = build_scaling_law_suite(all_raw.get("cupy_gpu_occupancy"))
     if gemv_projection_suite:
         print("\n--- GEMV Roofline Projections ---")
         print(f"{'Shape':<20} {'FP16 us':<12} {'Ternary us':<12} {'Speedup':<10} {'OI':<10} {'Energy (mJ)':<12}")
@@ -404,6 +564,20 @@ def main():
                 f"{ternary['operational_intensity']:<10.3f} "
                 f"{ternary['energy_mj']:<12.3f}"
             )
+
+    if scaling_law_suite:
+        ternary_fit = scaling_law_suite["ternary_latency_fit"]
+        fp16_fit = scaling_law_suite["fp16_latency_fit"]
+        sparsity_fit = scaling_law_suite["ternary_sparsity_fit"]
+        print("\n--- Scaling Law Fits ---")
+        print(f"  Observations:        {scaling_law_suite['num_observations']}")
+        print(f"  Ternary fit R^2:     {ternary_fit['r2']:.4f}")
+        print(f"  Ternary byte term:   {ternary_fit['us_per_weight_byte']:.6e} us/byte")
+        print(f"  Ternary op term:     {ternary_fit['us_per_useful_op']:.6e} us/op")
+        print(f"  FP16 fit R^2:        {fp16_fit['r2']:.4f}")
+        print(f"  FP16 byte term:      {fp16_fit['us_per_weight_byte']:.6e} us/byte")
+        print(f"  Sparsity fit R^2:    {sparsity_fit['r2']:.4f}")
+        print(f"  Nonzero slope:       {sparsity_fit['us_per_nonzero_fraction']:.3f} us")
 
     # Transformer inference
     print("\n--- Transformer Inference Metrics ---")
@@ -423,11 +597,19 @@ def main():
     # ═══════════════════════════════════════════════════════════════════════
     output = {
         "system": sys_info,
-        "config": {"train_steps": args.train_steps, "inference_samples": args.inference_samples, "num_runs": args.num_runs},
+        "config": {
+            "train_steps": args.train_steps,
+            "inference_samples": args.inference_samples,
+            "num_runs": args.num_runs,
+            "sample_power": args.sample_power,
+            "power_interval_ms": args.power_interval_ms,
+            "gpu_index": args.gpu_index,
+        },
         "latency_curves": [{k: v for k, v in lc.items() if k != "raw_results"} for lc in all_latency],
         "throughput_scaling": all_throughput,
         "gpu_occupancy": all_raw.get("cupy_gpu_occupancy"),
         "gemv_projection_suite": gemv_projection_suite,
+        "scaling_law_suite": scaling_law_suite,
         "raw_results": {},
     }
     for name, raw in all_raw.items():
@@ -462,6 +644,7 @@ def main():
         sys_info,
         args.num_runs,
         gemv_projection_suite,
+        scaling_law_suite,
     )
     md_path = os.path.join(PROJECT_ROOT, "benchmarks", "comparison_table.md")
     with open(md_path, "w", encoding="utf-8") as f:
@@ -478,6 +661,7 @@ def generate_markdown(
     sys_info,
     num_runs=3,
     gemv_projection_suite=None,
+    scaling_law_suite=None,
 ):
     """Generate markdown comparison table."""
     lines = [
@@ -497,6 +681,7 @@ def generate_markdown(
         "- **Task:** Character-level language model training + autoregressive inference",
         f"- **Measurement:** Warmup run discarded; {num_runs} measured runs per implementation",
         "- **Statistics:** Mean, std, median, p95 computed from per-run mean step latencies",
+        f"- **Power sampling:** {'enabled' if any(ts.get('avg_power_w', 0.0) > 0 for ts in all_throughput) else 'disabled'}",
         "",
         "## Latency (ms/step, training)",
         "",
@@ -514,13 +699,14 @@ def generate_markdown(
         "",
         "## Throughput",
         "",
-        "| Implementation | Train (steps/s) | Inference (tokens/s) |",
-        "|---------------|----------------|---------------------|",
+        "| Implementation | Train (steps/s) | Inference (tokens/s) | Approx. mJ/token |",
+        "|---------------|----------------|---------------------|------------------|",
     ]
     for ts in all_throughput:
         lines.append(
             f"| {ts['implementation']} | {ts['train_throughput_steps_s']:.2f} | "
-            f"{ts['inference_throughput_tokens_s']:.1f} |"
+            f"{ts['inference_throughput_tokens_s']:.1f} | "
+            f"{ts['inference_energy_per_token_mj']:.3f} |"
         )
 
     lines += [
@@ -578,6 +764,21 @@ def generate_markdown(
                 f"{ternary['projected_latency_us']:.2f} | {projection['speedup_vs_fp16']:.2f} | "
                 f"{ternary['operational_intensity']:.3f} | {ternary['energy_mj']:.3f} |"
             )
+
+    if scaling_law_suite:
+        ternary_fit = scaling_law_suite["ternary_latency_fit"]
+        fp16_fit = scaling_law_suite["fp16_latency_fit"]
+        sparsity_fit = scaling_law_suite["ternary_sparsity_fit"]
+        lines += [
+            "",
+            "## Scaling Law Fits",
+            "",
+            "| Fit | R^2 | Intercept (us) | Weight Term (us/byte) | Work Term |",
+            "|-----|-----|----------------|-----------------------|-----------|",
+            f"| Ternary latency | {ternary_fit['r2']:.4f} | {ternary_fit['intercept_us']:.3f} | {ternary_fit['us_per_weight_byte']:.6e} | {ternary_fit['us_per_useful_op']:.6e} us/op |",
+            f"| FP16 latency | {fp16_fit['r2']:.4f} | {fp16_fit['intercept_us']:.3f} | {fp16_fit['us_per_weight_byte']:.6e} | {fp16_fit['us_per_useful_op']:.6e} us/op |",
+            f"| Ternary sparsity | {sparsity_fit['r2']:.4f} | {sparsity_fit['intercept_us']:.3f} | n/a | {sparsity_fit['us_per_nonzero_fraction']:.3f} us/nonzero-fraction |",
+        ]
 
     lines += [
         "",
