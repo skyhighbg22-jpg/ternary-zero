@@ -3,7 +3,7 @@ name = "ternary-zero-core"
 version = "0.1.0"
 edition = "2021"
 description = "High-performance W2A16 GEMV kernel with ternary {-1,0,1} weights — Python/Rust hybrid"
-license = "MIT OR Apache-2.0"
+license = "AGPL-3.0"
 keywords = ["cuda", "gpu", "ternary", "quantization", "gemv", "pytorch"]
 categories = ["science", "hardware-support"]
 

@@ -13,7 +13,7 @@ identifiers:
   value: "10.5281/zenodo.XXXXXXX"
 - type: arXiv
   value: "2605.XXXXX"
-license: MIT
+license: AGPL-3.0
 keywords:
 - "quantization"
 - "GEMV"
