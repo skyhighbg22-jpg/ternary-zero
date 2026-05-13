@@ -677,7 +677,88 @@ The portability work also de-risks P4 (Transformer validation) by enabling testi
 
 ---
 
-## 6. Dependency Graph & Execution Sequencing
+## 6. Workstream P6: 75B Model Execution on 8GB VRAM (NEW)
+
+### 6.1 Problem Statement
+
+The RTX 4060 has 8 GB VRAM. A 75B parameter model in ternary (W2A16) format requires ~18.75 GB for weights alone — 2.3× the VRAM budget. Standard in-memory inference is physically impossible. A new execution strategy is required: **per-layer CPU-GPU weight streaming** with double-buffered async transfers, overlapped compute, and aggressive KV-cache management.
+
+### 6.2 Technical Objectives
+
+| ID | Objective | Scope |
+|---|---|---|
+| P6-O1 | **Per-layer weight streaming API** | Rust `StreamingWeights` struct with double-buffered GpuBuffer and async H2D transfers |
+| P6-O2 | **CPU-side weight management** | Quantized weights stored in pinned host memory; per-layer pack-once, stream-many |
+| P6-O3 | **Overlapped pipeline** | Prefetch layer K+1's weights while executing layer K's GEMV on stream 0 |
+| P6-O4 | **KV-cache memory reservation** | Pre-allocate full KV-cache in VRAM (640 MB at S=2048); never evict |
+| P6-O5 | **Embedding/LM-head residency** | Keep embedding (250 MB) and LM-head (250 MB) in VRAM permanently |
+| P6-O6 | **PCIe bandwidth measurement** | Measure actual H2D transfer rate; report utilization vs theoretical peak |
+| P6-O7 | **End-to-end 75B inference** | Generate text from a 75B ternary model on RTX 4060; measure tokens/sec |
+
+### 6.3 Memory Budget
+
+| Component | Size | VRAM Residency |
+|-----------|------|----------------|
+| Active layer weights (buffer A) | 206 MB | Streaming (swap per layer) |
+| Active layer weights (buffer B) | 206 MB | Streaming (double-buffer) |
+| KV-cache (80 layers, S=2048) | 640 MB | Permanent |
+| Embedding | 250 MB | Permanent |
+| LM Head (ternary) | 250 MB | Permanent |
+| Activation buffers | 44 MB | Permanent |
+| CUDA runtime overhead | ~300 MB | Permanent |
+| **TOTAL** | **~1,896 MB** | **Fits in 8 GB (6.1 GB headroom)** |
+
+### 6.4 Execution Pipeline (Per Token)
+
+```
+For each generated token:
+  1. Embed token_id → hidden state [8192] (VRAM lookup, no transfer)
+  2. For layer_idx = 0..79:
+     a. If layer_idx == 0: H2D transfer layer 0 weights (blocking first token)
+     b. If layer_idx + 1 < 80: async H2D transfer layer K+1 weights into inactive buffer
+     c. Execute layer K GEMV operations (Q/K/V/O projections + FFN)
+     d. Swap active/inactive weight buffers
+  3. Final RMSNorm (VRAM, no transfer)
+  4. LM Head GEMV (ternary, VRAM-resident)
+  5. Sample next token
+```
+
+### 6.5 Throughput Estimates
+
+| PCIe Version | Bandwidth | Transfer/Layer | Total Transfer/Token | GEMV Time/Token | Total/Token | Tokens/sec |
+|-------------|-----------|----------------|---------------------|-----------------|-------------|------------|
+| PCIe 3.0 x16 | 16 GB/s | 12.9 ms | 1,031 ms | ~160 ms | ~1,191 ms | **0.84** |
+| PCIe 4.0 x16 | 32 GB/s | 6.4 ms | 515 ms | ~160 ms | ~675 ms | **1.48** |
+| PCIe 5.0 x16 | 64 GB/s | 3.2 ms | 258 ms | ~160 ms | ~418 ms | **2.39** |
+| With double-buffer (PCIe 4.0) | 32 GB/s | ~3.8 ms effective | ~300 ms | ~160 ms | ~460 ms | **2.17** |
+
+### 6.6 Deliverables
+
+| Deliverable | Format | Location |
+|---|---|---|
+| Streaming weight manager | Rust | `src/streaming.rs` |
+| CPU weight loader | Rust | `src/host_weights.rs` |
+| Python streaming integration | Python | `ternary_zero/inference/streaming_engine.py` |
+| 75B inference test | Python | `tests/test_75b_streaming.py` |
+| PCIe bandwidth benchmark | Python | `benchmarks/pcie_bandwidth.py` |
+| Memory budget calculator | Python | `scripts/memory_calculator.py` |
+
+### 6.7 Success Metrics
+
+| Metric | Target | Measurement |
+|---|---|---|
+| 75B model loads without OOM | Zero CUDA OOM errors | `cudaMalloc` returns success for all allocations |
+| Text generation produces coherent output | Non-NaN logits, valid tokens | Manual inspection |
+| PCIe utilization | > 70% of theoretical bandwidth | Measured H2D throughput |
+| Decode throughput (PCIe 4.0) | > 1.0 tokens/sec | Timer measurement |
+| KV-cache fits in VRAM | 640 MB at S=2048 | `nvidia-smi` peak memory |
+| Double-buffer speedup | > 1.3× vs sequential | A/B comparison |
+
+---
+
+## 7. Dependency Graph & Execution Sequencing
+
+### 7.1 Updated Dependency Graph (with P6)
 
 ```
                     ┌─────────────────────────────────────────────────┐

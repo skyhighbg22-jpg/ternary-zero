@@ -7,6 +7,7 @@ from . import perf
 from . import utils
 from . import data
 from . import distributed
+from . import inference
 from ._config import (
     is_grad_enabled, enable_grad, no_grad,
     get_default_device, set_default_device, is_cuda_available, has_torch,

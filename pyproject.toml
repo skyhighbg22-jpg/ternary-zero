@@ -26,6 +26,11 @@ dependencies = [
 gpu = [
     "torch>=2.0",
 ]
+inference = [
+    "safetensors>=0.4",
+    "tokenizers>=0.15",
+    "transformers>=4.35",
+]
 dev = [
     "pytest>=7.0",
     "pytest-benchmark>=4.0",
@@ -34,6 +39,9 @@ dev = [
 cpu = [
     "numpy>=1.21",
 ]
+
+[project.scripts]
+ternary-zero = "ternary_zero.inference.run:main"
 
 [tool.maturin]
 features = ["pyo3/extension-module"]
