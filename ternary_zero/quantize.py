@@ -9,6 +9,18 @@ if has_torch():
     import torch
 
 
+def _as_numpy_array(value, dtype=None):
+    if isinstance(value, Tensor):
+        array = to_numpy(value.data)
+    elif has_torch() and isinstance(value, torch.Tensor):
+        array = value.detach().cpu().numpy()
+    else:
+        array = np.asarray(value)
+    if dtype is not None:
+        return array.astype(dtype, copy=False)
+    return array
+
+
 def ternary_quantize(
     weights: Tensor,
     alpha: float = 0.5,
@@ -113,18 +125,118 @@ def ternary_weight_analysis(weights: Tensor) -> dict:
     w = to_numpy(weights.data).flatten()
     total = len(w)
     zeros = int(np.sum(w == 0))
+    nonzeros = total - zeros
     positives = int(np.sum(w > 0))
     negatives = int(np.sum(w < 0))
     sparsity = zeros / total if total > 0 else 0.0
+    nonzero_fraction = nonzeros / total if total > 0 else 0.0
     return {
         "total": total,
         "zeros": zeros,
+        "nonzeros": nonzeros,
         "positives": positives,
         "negatives": negatives,
         "sparsity": sparsity,
+        "nonzero_fraction": nonzero_fraction,
+        "effective_arithmetic_density": nonzero_fraction,
+        "ideal_arithmetic_speedup_vs_dense": (
+            float("inf") if nonzero_fraction == 0.0 else 1.0 / nonzero_fraction
+        ),
         "compression_ratio_vs_fp32": 16.0,
         "compression_ratio_vs_fp16": 8.0,
     }
+
+
+def fp16_accumulation_error_bound(
+    ternary_weights: Tensor,
+    activations: Union[Tensor, np.ndarray],
+    scale: float = 1.0,
+    unit_roundoff: float = None,
+) -> dict:
+    tw = _as_numpy_array(ternary_weights, dtype=np.float32)
+    act = _as_numpy_array(activations, dtype=np.float32).reshape(-1)
+    if tw.ndim == 1:
+        tw = tw.reshape(1, -1)
+    if tw.shape[1] != act.size:
+        raise ValueError(
+            f"activations size {act.size} must match weight width {tw.shape[1]}"
+        )
+
+    u = float(unit_roundoff) if unit_roundoff is not None else float(np.finfo(np.float16).eps / 2.0)
+    row_terms = np.abs(tw * float(scale)) * np.abs(act)[None, :]
+    nonzero_per_row = np.count_nonzero(tw, axis=1).astype(np.float64)
+    gamma = np.empty_like(nonzero_per_row, dtype=np.float64)
+    for i, count in enumerate(nonzero_per_row):
+        nu = count * u
+        gamma[i] = np.inf if nu >= 1.0 else nu / (1.0 - nu)
+    per_row_bound = gamma * row_terms.sum(axis=1)
+
+    return {
+        "unit_roundoff": u,
+        "nonzero_terms_per_row": nonzero_per_row.tolist(),
+        "gamma_per_row": gamma.tolist(),
+        "per_row_bound": per_row_bound.tolist(),
+        "mean_abs_bound": float(np.mean(per_row_bound)) if per_row_bound.size else 0.0,
+        "max_abs_bound": float(np.max(per_row_bound)) if per_row_bound.size else 0.0,
+    }
+
+
+def quantization_noise_analysis(
+    weights: Tensor,
+    alpha: float = 0.5,
+    activations: Union[Tensor, np.ndarray, None] = None,
+) -> dict:
+    ternary, scale = ternary_quantize(weights, alpha=alpha)
+    dequantized = dequantize_ternary(ternary, scale)
+
+    original = _as_numpy_array(weights, dtype=np.float32)
+    reconstructed = _as_numpy_array(dequantized, dtype=np.float32)
+    error = original - reconstructed
+    error_power = float(np.mean(error ** 2)) if error.size else 0.0
+    signal_power = float(np.mean(original ** 2)) if original.size else 0.0
+    snr_db = float("inf") if error_power == 0.0 else 10.0 * np.log10(signal_power / error_power)
+
+    report = {
+        "scale": float(scale),
+        "mse": error_power,
+        "rmse": float(np.sqrt(error_power)),
+        "mae": float(np.mean(np.abs(error))) if error.size else 0.0,
+        "max_abs_error": float(np.max(np.abs(error))) if error.size else 0.0,
+        "error_variance": float(np.var(error)) if error.size else 0.0,
+        "signal_power": signal_power,
+        "snr_db": float(snr_db),
+        "sparsity": ternary_weight_analysis(ternary)["sparsity"],
+    }
+
+    if activations is not None:
+        act = _as_numpy_array(activations, dtype=np.float32)
+        if original.ndim == 1:
+            error_matrix = error.reshape(1, -1)
+        else:
+            error_matrix = error.reshape(original.shape[0], -1)
+
+        if act.ndim == 1:
+            if error_matrix.shape[1] != act.size:
+                raise ValueError(
+                    f"activations size {act.size} must match weight width {error_matrix.shape[1]}"
+                )
+            output_error = error_matrix @ act
+        elif act.ndim == 2:
+            if error_matrix.shape[1] != act.shape[0]:
+                raise ValueError(
+                    f"activation leading dimension {act.shape[0]} must match weight width {error_matrix.shape[1]}"
+                )
+            output_error = error_matrix @ act
+        else:
+            raise ValueError("activations must be a vector or matrix")
+
+        report.update({
+            "output_noise_energy": float(np.sum(output_error ** 2)),
+            "output_noise_variance": float(np.mean(output_error ** 2)),
+            "output_noise_l2": float(np.linalg.norm(output_error)),
+        })
+
+    return report
 
 
 # =====================================================================

@@ -19,7 +19,16 @@ import statistics
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
 sys.path.insert(0, SCRIPT_DIR)
+sys.path.insert(0, PROJECT_ROOT)
 os.chdir(PROJECT_ROOT)
+
+from ternary_zero.perf import (
+    GemvShape,
+    HardwareSpec,
+    MemoryTierFractions,
+    compare_ternary_fp16,
+    occupancy_ratio,
+)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -136,6 +145,13 @@ def bench_gpu_occupancy():
         dev = cp.cuda.Device()
         mem_info = dev.mem_info
         props = cp.cuda.runtime.getDeviceProperties(0)
+        memory_clock_khz = float(props.get("memoryClockRate", 0))
+        memory_bus_width_bits = int(props.get("memoryBusWidth", 0))
+        theoretical_bandwidth_gbps = (
+            2.0 * memory_clock_khz * 1e3 * (memory_bus_width_bits / 8.0) / 1e9
+            if memory_clock_khz > 0 and memory_bus_width_bits > 0
+            else 0.0
+        )
         return {
             "implementation": "cupy",
             "gpu_name": props["name"].decode(),
@@ -147,9 +163,57 @@ def bench_gpu_occupancy():
             "max_threads_per_block": props["maxThreadsPerBlock"],
             "warp_size": props["warpSize"],
             "compute_capability": f"{props['major']}.{props['minor']}",
+            "shared_mem_per_sm_bytes": props.get("sharedMemPerMultiprocessor", 0),
+            "registers_per_sm": props.get("regsPerMultiprocessor", 0),
+            "memory_clock_khz": memory_clock_khz,
+            "memory_bus_width_bits": memory_bus_width_bits,
+            "max_warps_per_sm": props["maxThreadsPerMultiProcessor"] / props["warpSize"],
+            "theoretical_bandwidth_gbps": theoretical_bandwidth_gbps,
         }
     except Exception as e:
         return {"implementation": "cupy", "error": str(e)}
+
+
+def build_gemv_projection_suite(gpu_info):
+    """Generate roofline-style GEMV projections for representative decode shapes."""
+    if not gpu_info or "error" in gpu_info:
+        return []
+
+    dram_gbps = gpu_info.get("theoretical_bandwidth_gbps", 0.0) or 272.0
+    max_threads_per_sm = gpu_info.get("max_threads_per_sm", 1536)
+    kernel_threads = min(256, gpu_info.get("max_threads_per_block", 256))
+    # The custom kernel is tuned for 4 resident blocks/SM on Ada.
+    occ = occupancy_ratio(min(4, max(1, int(max_threads_per_sm // kernel_threads))) * kernel_threads, max_threads_per_sm)
+    hardware = HardwareSpec(
+        peak_compute_gops=8_500.0,
+        dram_bandwidth_gbps=dram_gbps,
+        l2_bandwidth_gbps=max(dram_gbps * 1.8, dram_gbps),
+        shared_bandwidth_gbps=max(dram_gbps * 8.0, dram_gbps),
+        average_power_w=75.0,
+    )
+    shapes = [
+        ("gpt2_small_layer", GemvShape(m=768, n=768, sparsity=0.5)),
+        ("gpt2_medium_layer", GemvShape(m=1024, n=1024, sparsity=0.5)),
+        ("llama_7b_layer", GemvShape(m=4096, n=4096, sparsity=0.5)),
+        ("llama_13b_layer", GemvShape(m=5120, n=5120, sparsity=0.5)),
+    ]
+    projections = []
+    for name, shape in shapes:
+        comparison = compare_ternary_fp16(
+            shape=shape,
+            hardware=hardware,
+            occupancy=occ,
+            warp_efficiency_value=1.0,
+            ternary_memory_tiers=MemoryTierFractions(dram=0.9, l2=0.1, shared=0.0),
+            fp16_memory_tiers=MemoryTierFractions(dram=0.95, l2=0.05, shared=0.0),
+            decode_time_us=2.5,
+            reduce_time_us=1.0,
+            sync_time_us=0.5,
+        )
+        entry = comparison.to_dict()
+        entry["name"] = name
+        projections.append(entry)
+    return projections
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -319,8 +383,27 @@ def main():
             print(f"  Max Threads/SM:   {occ['max_threads_per_sm']}")
             print(f"  Max Threads/Blk:  {occ['max_threads_per_block']}")
             print(f"  Warp Size:        {occ['warp_size']}")
+            print(f"  Max Warps/SM:     {occ['max_warps_per_sm']:.0f}")
+            print(f"  Theo BW:          {occ['theoretical_bandwidth_gbps']:.1f} GB/s")
             print(f"  Total VRAM:       {occ['gpu_total_mem_mb']:.0f} MB")
             print(f"  Used VRAM:        {occ['gpu_used_mem_mb']:.1f} MB")
+
+    gemv_projection_suite = build_gemv_projection_suite(all_raw.get("cupy_gpu_occupancy"))
+    if gemv_projection_suite:
+        print("\n--- GEMV Roofline Projections ---")
+        print(f"{'Shape':<20} {'FP16 us':<12} {'Ternary us':<12} {'Speedup':<10} {'OI':<10} {'Energy (mJ)':<12}")
+        print("-" * 78)
+        for projection in gemv_projection_suite:
+            fp16 = projection["fp16"]
+            ternary = projection["ternary"]
+            print(
+                f"{projection['name']:<20} "
+                f"{fp16['projected_latency_us']:<12.2f} "
+                f"{ternary['projected_latency_us']:<12.2f} "
+                f"{projection['speedup_vs_fp16']:<10.2f} "
+                f"{ternary['operational_intensity']:<10.3f} "
+                f"{ternary['energy_mj']:<12.3f}"
+            )
 
     # Transformer inference
     print("\n--- Transformer Inference Metrics ---")
@@ -344,6 +427,7 @@ def main():
         "latency_curves": [{k: v for k, v in lc.items() if k != "raw_results"} for lc in all_latency],
         "throughput_scaling": all_throughput,
         "gpu_occupancy": all_raw.get("cupy_gpu_occupancy"),
+        "gemv_projection_suite": gemv_projection_suite,
         "raw_results": {},
     }
     for name, raw in all_raw.items():
@@ -371,7 +455,14 @@ def main():
     print(f"\nJSON results: {out_path}")
 
     # Generate markdown table for BENCHMARKS.md
-    md = generate_markdown(all_latency, all_throughput, all_raw, sys_info, args.num_runs)
+    md = generate_markdown(
+        all_latency,
+        all_throughput,
+        all_raw,
+        sys_info,
+        args.num_runs,
+        gemv_projection_suite,
+    )
     md_path = os.path.join(PROJECT_ROOT, "benchmarks", "comparison_table.md")
     with open(md_path, "w", encoding="utf-8") as f:
         f.write(md)
@@ -380,7 +471,14 @@ def main():
     print("\nDone.")
 
 
-def generate_markdown(all_latency, all_throughput, all_raw, sys_info, num_runs=3):
+def generate_markdown(
+    all_latency,
+    all_throughput,
+    all_raw,
+    sys_info,
+    num_runs=3,
+    gemv_projection_suite=None,
+):
     """Generate markdown comparison table."""
     lines = [
         "# microGPT Implementation Benchmark: Actual Measured Results",
@@ -458,9 +556,28 @@ def generate_markdown(all_latency, all_throughput, all_raw, sys_info, num_runs=3
                 f"| SM Count | {occ['sm_count']} |",
                 f"| Max Threads/SM | {occ['max_threads_per_sm']} |",
                 f"| Warp Size | {occ['warp_size']} |",
+                f"| Max Warps/SM | {occ['max_warps_per_sm']:.0f} |",
+                f"| Theoretical BW | {occ['theoretical_bandwidth_gbps']:.1f} GB/s |",
                 f"| VRAM Total | {occ['gpu_total_mem_mb']:.0f} MB |",
                 f"| VRAM Used (idle) | {occ['gpu_used_mem_mb']:.1f} MB |",
             ]
+
+    if gemv_projection_suite:
+        lines += [
+            "",
+            "## GEMV Roofline Projections",
+            "",
+            "| Shape | FP16 Latency (us) | Ternary Latency (us) | Speedup | Ternary OI | Ternary Energy (mJ) |",
+            "|-------|-------------------|----------------------|---------|------------|---------------------|",
+        ]
+        for projection in gemv_projection_suite:
+            fp16 = projection["fp16"]
+            ternary = projection["ternary"]
+            lines.append(
+                f"| {projection['name']} | {fp16['projected_latency_us']:.2f} | "
+                f"{ternary['projected_latency_us']:.2f} | {projection['speedup_vs_fp16']:.2f} | "
+                f"{ternary['operational_intensity']:.3f} | {ternary['energy_mj']:.3f} |"
+            )
 
     lines += [
         "",

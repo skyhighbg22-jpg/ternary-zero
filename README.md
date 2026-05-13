@@ -160,7 +160,7 @@ Key observations:
 
 ### W2A16 GEMV kernel -- theoretical estimates (not measured)
 
-The following are bandwidth-bound projections for the CUDA GEMV kernel on RTX 4060 (272 GB/s memory bandwidth). These have **not** been validated on hardware.
+The following are roofline-style projections for the CUDA GEMV kernel on RTX 4060 (272 GB/s memory bandwidth). They account for packed weights, activation traffic, decode overhead, and occupancy assumptions, and they have **not** been validated on hardware.
 
 | Configuration | Latency (est.) | Speedup vs FP16 (est.) | VRAM Savings |
 |---|---|---|---|
@@ -181,7 +181,7 @@ Results are saved to `benchmarks/results.json`.
 
 - **No GPU-accelerated training loop.** The CUDA kernel currently targets inference GEMV only. Training uses the Python autograd engine with CPU-based ternary quantization.
 - **Untested at scale.** All measured benchmarks use a 4,192-parameter microGPT. Behavior at GPT-2 or LLaMA scale is theoretical.
-- **CUDA kernel not profiled against cuBLAS.** The theoretical GEMV speedup estimates are derived from memory bandwidth calculations, not wall-clock measurements.
+- **CUDA kernel not profiled against cuBLAS.** The theoretical GEMV speedup estimates are derived from roofline and cache-aware performance modeling, not wall-clock measurements.
 - **Single-GPU only.** No multi-GPU or distributed training support.
 - **sm_89 specific.** The CUDA kernel targets Ada Lovelace (RTX 4060). Other architectures may require kernel modifications.
 - **No model zoo.** No pretrained ternary models are provided.

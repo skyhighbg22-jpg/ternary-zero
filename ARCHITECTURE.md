@@ -596,29 +596,42 @@ Example: 7B parameter model
 
 ### 7.2 Memory-Bandwidth Bound Inference
 
-LLM inference is memory-bandwidth bound. For each generated token, the entire weight matrix must be read from DRAM. The arithmetic intensity (FLOPs/byte) is extremely low because each weight is used exactly once per token in autoregressive decoding.
+LLM inference is memory-bandwidth bound, but the right analytical frame is a roofline model rather than a single bandwidth ratio. For each generated token, the weight matrix must be read from the cache hierarchy or DRAM, and the achieved throughput is capped by both arithmetic intensity and occupancy.
+
+Let operational intensity be
+
+$$I = \frac{\text{useful operations}}{\text{bytes transferred}}$$
+
+and throughput be approximated by
+
+$$P = \min\left(P_{\text{peak}} \cdot Occ \cdot \eta_{\text{warp}}, \; I \cdot BW_{\text{eff}}\right)$$
+
+where $Occ$ is the occupancy ceiling, $\eta_{\text{warp}}$ is warp efficiency, and $BW_{\text{eff}}$ includes DRAM, L2, and shared-memory reuse. For ternary GEMV, useful work scales with non-zero accumulations while bytes are dominated by packed weights plus activations and output.
 
 ```
 Standard GEMV (FP16):  output[m] = sum_n W[m,n] x A[n]
   - 2*MN FLOPs
   - 2*MN bytes weight read (FP16)
-  - Arithmetic intensity = 1 FLOP/byte
+  - Arithmetic intensity = 1 FLOP/byte (weight-dominant idealization)
 
 Ternary GEMV (W2A16):  output[m] = sum_n decode(W[m,n]) x A[n]
-  - MN add/subtract ops (no multiplies)
+  - (1-rho0)*MN useful accumulations
   - MN/4 bytes weight read (2-bit packed, 16 per uint32_t)
-  - Arithmetic intensity = 4 ops/byte  (4x higher)
-  - But more importantly: 16x less memory to read
+  - Higher arithmetic intensity, but still memory-bound for practical decode kernels
+  - Actual speedup is limited by decode throughput, occupancy, and cache reuse
 
 Roofline reasoning:
-  If DRAM bandwidth is B bytes/sec:
+  If DRAM bandwidth is B bytes/sec and overheads are negligible:
     FP16 GEMV time  ~ 2MN / B
-    W2A16 GEMV time ~ MN / (4B)     <- 8x faster if compute is not the bottleneck
+    W2A16 GEMV time ~ (MN/4) / B
+  In practice, add T_decode + T_reduce + T_sync and apply occupancy limits.
 
   On RTX 4060 (272 GB/s bandwidth):
     FP16  7B model decode: 14 GB / 272 GB/s   ~ 51 ms/token (weight loading only)
     W2A16 7B model decode: 1.75 GB / 272 GB/s ~ 6.4 ms/token (weight loading only)
 ```
+
+This is why the kernel is strongest in the batch-size-1 decode regime: the bandwidth term improves by 8x relative to FP16, but the realized speedup depends on whether decode and occupancy stay below the memory ceiling.
 
 ### 7.3 Multiply-Free GEMV
 
@@ -672,12 +685,13 @@ Training uses Python-level autograd with STE. The backward pass (`ste_backward_w
 
 ### 8.6 Theoretical GEMV Estimates Not Validated on Hardware
 
-The roofline estimates in Section 7 are theoretical. Actual performance depends on:
+The roofline estimates in Section 7 are theoretical and should be read as ceilings, not promises. Actual performance depends on:
 - DRAM bandwidth utilization efficiency (typically 60-80% of peak)
 - L2 cache hit rate for weight reuse across tokens
 - Occupancy limited by register pressure (64 regs/thread, 4 blocks/SM)
 - Shared memory bank conflict residual despite stride-17 padding
 - Warp scheduling efficiency with the branchless zero-gate pattern
+- Decode throughput for `BFE` / `PRMT` / `LOP3` instruction mix
 
 No profiling data or benchmark results are included in this documentation. The `gemv_bench` criterion benchmark referenced in `Cargo.toml` would provide empirical measurements.
 

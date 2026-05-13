@@ -3,6 +3,7 @@ from . import nn
 from . import optim
 from . import autograd
 from . import quantize
+from . import perf
 from . import utils
 from . import data
 from . import distributed
@@ -27,6 +28,7 @@ __all__ = [
     "optim",
     "autograd",
     "quantize",
+    "perf",
     "utils",
     "data",
     "distributed",

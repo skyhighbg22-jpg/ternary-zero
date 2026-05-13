@@ -115,6 +115,26 @@ The accumulator must represent the partial sum $y_i = \sum_j q(w_{ij}) \cdot x_j
 - Block-level reduction: `float` (accumulated from warp sums)
 - Final output: `half` (written to global memory)
 
+**Forward-error bound:** for a sum of $N$ terms computed in floating point with unit roundoff $u$,
+
+$$|\hat{y}_i - y_i| \leq \gamma_N \sum_{j=0}^{N-1} |q(w_{ij}) x_j|, \quad \gamma_N = \frac{Nu}{1-Nu}, \quad Nu < 1$$
+
+This is the standard worst-case bound for sequential accumulation. In practice, the kernel uses warp and block reductions in `float`, so the dominant rounding term is usually the final cast back to `half`, not the inner partial sums.
+
+**Quantization noise model:** define the elementwise quantization error
+
+$$e_{ij} = w_{ij} - \hat{w}_{ij}, \quad \hat{\mathbf{W}} = \mathbf{W} - \mathbf{E}$$
+
+so the quantized output becomes
+
+$$\hat{\mathbf{y}} = \hat{\mathbf{W}} \mathbf{x} = \mathbf{W}\mathbf{x} - \mathbf{E}\mathbf{x}$$
+
+and the error energy is governed by
+
+$$\mathbb{E}\left[\lVert \mathbf{E}\mathbf{x} \rVert_2^2\right]$$
+
+Under the usual zero-mean, weakly independent calibration assumption, this scales with the activation energy and the per-column quantization variance. That gives the method a standard compression-theory interpretation rather than a purely procedural one.
+
 ### 1.6 Execution Decomposition: Algorithm → Hardware Instructions
 
 The GEMV computation is decomposed into discrete hardware-level operations:
@@ -133,6 +153,26 @@ The GEMV computation is decomposed into discrete hardware-level operations:
 | 10. Output store | `STG.16` (register → global) | ~200-400 | 16 bytes/coalesced |
 
 **Critical path analysis:** Steps 1 and 10 (global memory access) dominate latency. Steps 2-7 are fully pipelined in the execution unit. The zero-gate (step 6) adds 1 cycle per weight pair — negligible relative to memory latency.
+
+**Instruction-class decode model:** the scalar `T_decode` term is better treated as a throughput-limited pipeline:
+
+$$T_{\text{decode}} = \max\left(\frac{N_{\text{bfe}}}{\Theta_{\text{bfe}}}, \frac{N_{\text{prmt}}}{\Theta_{\text{prmt}}}, \frac{N_{\text{lop3}}}{\Theta_{\text{lop3}}}, \frac{N_{\text{shfl}}}{\Theta_{\text{shfl}}}\right)$$
+
+where $\Theta$ denotes sustained instruction throughput for each class. This is the right level of abstraction for GPU review: the kernel is not just "doing decode," it is competing with the SM issue pipeline.
+
+**Occupancy-constrained throughput:** register pressure and shared memory usage reduce the effective peak:
+
+$$Occ = \min(Occ_{\text{regs}}, Occ_{\text{smem}}, Occ_{\text{warps}}, Occ_{\text{threads}})$$
+
+$$P_{\text{eff}} = Occ \cdot \eta_{\text{warp}} \cdot \min(P_{\text{peak}}, I \cdot BW_{\text{eff}})$$
+
+where $\eta_{\text{warp}} = \text{active lanes} / 32$ and $BW_{\text{eff}}$ is the effective bandwidth after cache reuse is accounted for. This makes the register-pressure cost of bit unpacking, masking, and reduction explicit.
+
+**Cache-hierarchy bandwidth model:** instead of assuming every byte comes from DRAM,
+
+$$T_{\text{memory}} = \frac{B_{\text{dram}}}{BW_{\text{dram}}} + \frac{B_{\text{l2}}}{BW_{\text{l2}}} + \frac{B_{\text{shared}}}{BW_{\text{shared}}}$$
+
+with $B_{\text{dram}} + B_{\text{l2}} + B_{\text{shared}} = B_{\text{effective}}$. This captures the fact that activation reuse, partial-tile reuse, and shared-memory staging all move work off the DRAM ceiling.
 
 ---
 
@@ -267,36 +307,43 @@ def validate_kernel_accuracy(M, N, sparsity, tolerance=1e-3):
 
 ## 3. Critical Risk Analysis: The Overhead-Throughput Tradeoff
 
-### 3.1 The Efficiency Inequality
+### 3.1 Unified Roofline Model
 
-The ternary GEMV kernel achieves speedup over FP16 GEMV **if and only if**:
+The ternary GEMV kernel is better described by a roofline model with explicit overhead terms than by a single bandwidth inequality.
 
-$$T_{\text{FP16}} > T_{\text{ternary}}$$
+Let the zero fraction be
 
-Expanding each side in terms of memory and compute:
+$$\rho_0 = \frac{|\mathcal{Z}|}{N}$$
 
-$$\frac{B_{\text{FP16}}}{BW_{\text{DRAM}}} > \frac{B_{\text{ternary}}}{BW_{\text{DRAM}}} + T_{\text{decode}} + T_{\text{reduce}} + T_{\text{sync}}$$
+and the useful arithmetic density be
 
-where:
-- $B_{\text{FP16}} = 2MN$ bytes (FP16 weight traffic)
-- $B_{\text{ternary}} = \frac{MN}{4} + 2N + 2M$ bytes (packed weights + uncompressed activations + output)
-- $T_{\text{decode}}$ = PTX bit-extraction and masking overhead
-- $T_{\text{reduce}}$ = warp + block-level reduction latency
-- $T_{\text{sync}}$ = `__syncthreads()` + stream synchronization overhead
+$$N_{\text{eff}} = (1 - \rho_0)N$$
 
-**Simplifying (for $M \ll N$, activation/output terms negligible):**
+For ternary GEMV, the useful operation count is approximately $M N_{\text{eff}}$, while the transferred bytes are dominated by packed weights plus activations and outputs:
 
-$$\frac{2MN}{BW} > \frac{MN/4}{BW} + T_{\text{decode}} + T_{\text{reduce}}$$
+$$B_{\text{ternary}} \approx \frac{MN}{4} + 2N + 2M$$
 
-$$\frac{7MN/4}{BW} > T_{\text{decode}} + T_{\text{reduce}}$$
+The operational intensity is therefore
 
-$$MN > \frac{4 \cdot BW \cdot (T_{\text{decode}} + T_{\text{reduce}})}{7}$$
+$$I_{\text{ternary}} = \frac{M N_{\text{eff}}}{B_{\text{ternary}}}$$
 
-**Interpretation:** There exists a minimum problem size $MN_{\min}$ below which kernel launch overhead and decode latency exceed the bandwidth savings. For the RTX 4060 (272 GB/s), with estimated $T_{\text{decode}} + T_{\text{reduce}} \approx 5\text{-}10 \, \mu s$:
+and the roofline throughput bound is
 
-$$MN_{\min} \approx \frac{4 \times 272 \times 10^9 \times 10 \times 10^{-6}}{7} \approx 1.56 \times 10^6$$
+$$P_{\text{roof}} = \min\left(P_{\text{peak}} \cdot Occ \cdot \eta_{\text{warp}}, \; I_{\text{ternary}} \cdot BW_{\text{eff}}\right)$$
 
-This corresponds to approximately $M=1, N=1560$ or $M=4, N=400$ — well below typical transformer dimensions. The kernel is expected to be bandwidth-bound for all practical problem sizes.
+where $BW_{\text{eff}}$ may be expanded into cache-hierarchy terms as defined in Section 1.6.
+
+The end-to-end latency model is then
+
+$$T_{\text{ternary}} = \frac{M N_{\text{eff}}}{P_{\text{roof}}} + T_{\text{decode}} + T_{\text{reduce}} + T_{\text{sync}}$$
+
+and the speedup over the FP16 baseline is
+
+$$S = \frac{T_{\text{FP16}}}{T_{\text{ternary}}} = \frac{T_{\text{baseline}}}{T_{\text{memory}} + T_{\text{decode}} + T_{\text{reduce}} + T_{\text{sync}}}$$
+
+This is the master performance equation used throughout the rest of the analysis.
+
+**Interpretation:** the kernel is memory-bound in the large-$N$ regime, decode- and occupancy-limited in the small-$N$ regime, and cache-aware reuse can move the crossover point materially. That is a much stronger statement than "bandwidth matters" because it identifies the actual controlling ceiling.
 
 ### 3.2 Tensor Core Pathway Comparison
 
@@ -319,16 +366,18 @@ NVIDIA Tensor Cores provide hardware-accelerated matrix operations that the tern
 
 | Overhead Source | Estimated Cost | Mitigation |
 |---|---|---|
-| PTX decode (BFE + PRMT) | ~1-2 cycles/weight | Pipelined; hidden by memory latency |
-| Zero-gate masking (LOP3) | ~1 cycle/weight pair | Branchless; no divergence penalty |
+| PTX decode (`BFE`, `PRMT`) | Throughput-limited by issue slots | Keep packed layout aligned |
+| Zero-gate masking (`LOP3`) | Throughput-limited by integer pipe | Branchless; no divergence penalty |
+| Sign flip / bit ops | Throughput-limited by integer pipe | Fuse into decode path |
 | Shared memory sync | ~5-10 cycles/tile | Amortized over 1024-element tile |
-| Warp reduction (SHFL) | ~5 cycles/warp | Single instruction per step |
+| Warp reduction (`SHFL`) | ~5 cycles/warp | Single instruction per step |
 | Block reduction | ~10 cycles/block | One per output row |
-| Stream sync (host-device) | ~5-10 μs | Batch multiple GEMVs |
+| Stream sync (host-device) | ~5-10 us | Batch multiple GEMVs |
 | Activation upload (H2D) | $2N$ bytes per call | Pre-cache for repeated calls |
+| Warp underutilization | $\eta_{\text{warp}} < 1$ | Improve tail handling / batch shape |
+| Register pressure | Lowers $Occ$ | Reuse registers, limit live ranges |
 
-**Net assessment:** The decode and reduction overhead is ~20-50 cycles per output element, dominated by memory latency (~200-400 cycles for global memory). The overhead is **< 10% of total kernel time** for $N \geq 1024$.
-
+**Net assessment:** the dominant cost is no longer a single scalar "decode tax." The relevant question is which ceiling wins: DRAM, L2/shared reuse, issue throughput, occupancy, or warp efficiency. That framing is harder to attack analytically because it matches the actual GPU execution model.
 ---
 
 ## 4. Validation Benchmarks & Impact Metrics
