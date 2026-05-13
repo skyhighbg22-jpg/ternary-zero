@@ -34,8 +34,11 @@ Ternary-Zero is a research codebase implementing 2-bit weight, 16-bit activation
 ternary_zero/           Python: autograd, nn modules, optimizers, quantization
 src/                    Rust: lib.rs, bitlinear.rs, ste.rs, ffi.rs, error.rs
 kernel/                 CUDA: ternary_zero.cu (PTX GEMV kernel)
-build.rs                Rust build script (compiles CUDA via cc)
-benchmarks/             Python benchmark scripts + results.json
+                        CUDA: l2_persist.cu (L2 cache persistence manager)
+                        CUDA: nvt/ternary_zero_nvtx.h (NVTX profiling markers)
+benchmarks/             Python benchmark scripts + CUDA comparison harnesses
+  baseline_comparison.cu    CUDA: Ternary-Zero vs cuBLAS FP16 vs INT4 dequant
+  undeniable_benchmark.py   Python: VRAM footprint + latency verification
 benches/                Rust criterion benchmarks (gemv_bench.rs)
 tests/                  Python pytest tests
 ```
@@ -135,7 +138,7 @@ with tz.no_grad():
 
 ## Benchmark Results
 
-### microGPT measured comparison (2026-05-09)
+### microGPT measured comparison (2026-05-09) — MEASURED
 
 Karpathy's microGPT (4,192 parameters, vocab=27) benchmarked across 6 implementations.
 
@@ -152,13 +155,19 @@ System: Intel 12th Gen (12 cores), 15.8 GB RAM, RTX 4060 Laptop GPU, Python 3.13
 
 Weight memory: FP32 = 16,768 bytes; BitLinear = 1,060 bytes (16x compression).
 
-Key observations:
-- BitLinear achieves the lowest inference latency (15.3ms) at this model scale through branchless zero-gating and multiply elimination
-- Ternary-Zero FP32 is competitive with PyTorch CPU, validating the Python autograd engine
-- CuPy overhead dominates at 4K-parameter scale; kernel launch cost exceeds compute
-- These results are on a toy model; scaling behavior to real LLM sizes is unknown
+### VRAM footprint analysis (2026-05-13) — STRUCTURED-ANALYTICAL
 
-### W2A16 GEMV kernel -- theoretical estimates (not measured)
+Computed from published Llama architecture specifications. No model weights
+were downloaded. No GPU execution was required. See `BENCHMARKS.md` for
+full methodology.
+
+| Model | Total Params | FP16 Weight Mem | Ternary Weight Mem | Compression |
+|---|---|---|---|---|
+| Llama-3.2-1B | 1,498,482,688 | 2,858 MB | 357 MB | **8.0x** |
+| Llama-2-7B | 6,738,415,616 | 12,853 MB | 1,607 MB | **8.0x** |
+| Llama-3-8B | 8,030,261,248 | 15,316 MB | 1,914 MB | **8.0x** |
+
+### W2A16 GEMV kernel — THEORETICAL estimates (not measured)
 
 The following are roofline-style projections for the CUDA GEMV kernel on RTX 4060 (272 GB/s memory bandwidth). They account for packed weights, activation traffic, decode overhead, and occupancy assumptions, and they have **not** been validated on hardware.
 
@@ -171,17 +180,31 @@ The following are roofline-style projections for the CUDA GEMV kernel on RTX 406
 ### Running benchmarks
 
 ```bash
+# microGPT implementation comparison (measured)
 python benchmarks/run_benchmarks.py --train-steps 20 --inference-samples 5
+
+# VRAM footprint + latency verification (structured-analytical + optional GPU)
+python benchmarks/undeniable_benchmark.py --model llama-3.2-1b
+python benchmarks/undeniable_benchmark.py --model llama-2-7b
+
+# Rust/CUDA kernel benchmarks (requires maturin develop --release)
 cargo bench --bench gemv_bench
+
+# CUDA baseline comparison (requires nvcc)
+nvcc -O3 --use_fast_math -std=c++17 --gpu-architecture=sm_89 \
+     -Ikernel -o benchmarks/baseline_comparison.exe \
+     benchmarks/baseline_comparison.cu -lcublas -lcudart_static
 ```
 
-Results are saved to `benchmarks/results.json`.
+Results are saved to `benchmarks/results.json` and `benchmarks/undeniable_results.json`.
 
 ## Current Limitations
 
 - **No GPU-accelerated training loop.** The CUDA kernel currently targets inference GEMV only. Training uses the Python autograd engine with CPU-based ternary quantization.
 - **Untested at scale.** All measured benchmarks use a 4,192-parameter microGPT. Behavior at GPT-2 or LLaMA scale is theoretical.
 - **CUDA kernel not profiled against cuBLAS.** The theoretical GEMV speedup estimates are derived from roofline and cache-aware performance modeling, not wall-clock measurements.
+- **Baseline comparison harness written but not executed.** `benchmarks/baseline_comparison.cu` and `kernel/l2_persist.cu` are new source files that have not been compiled or run on GPU hardware. The NVTX profiling infrastructure (`kernel/nvt/ternary_zero_nvtx.h`) is also untested.
+- **VRAM footprint claims are arithmetic, not empirical.** The 8.0x compression ratio is a mathematical property of 2-bit vs 16-bit encoding. No actual Llama model was loaded or profiled.
 - **Single-GPU only.** No multi-GPU or distributed training support.
 - **sm_89 specific.** The CUDA kernel targets Ada Lovelace (RTX 4060). Other architectures may require kernel modifications.
 - **No model zoo.** No pretrained ternary models are provided.
@@ -208,7 +231,7 @@ cargo fmt --check
 - [METHODOLOGY.md](METHODOLOGY.md) -- Mathematical foundations and quantization theory
 - [ARCHITECTURE_GOVERNANCE.md](ARCHITECTURE_GOVERNANCE.md) -- Architecture and implementation details
 - [EXECUTION_PLAN.md](EXECUTION_PLAN.md) -- Validation protocol and execution plan
-- [BENCHMARKS.md](BENCHMARKS.md) -- Detailed benchmark methodology and results
+- [BENCHMARKS.md](BENCHMARKS.md) -- Detailed benchmark methodology, results, and provenance labels
 
 ## Contributing
 

@@ -251,6 +251,54 @@ extern "C" {
         base_ptr: *const c_void,
         num_bytes: usize,
     ) -> CudaError;
+
+    pub fn ternary_zero_gemv_profiled(
+        weights: *const u32,
+        activations: *const u16,
+        output: *mut u16,
+        m: c_int,
+        n: c_int,
+        stream: cudaStream_t,
+        phase_tile_load_us: *mut f32,
+        phase_decode_us: *mut f32,
+        phase_reduce_us: *mut f32,
+    ) -> CudaError;
+
+    pub fn l2_persist_single_layer(
+        stream: cudaStream_t,
+        weights: *const u32,
+        m: c_int,
+        n: c_int,
+        hit_ratio_out: *mut f32,
+        bytes_pinned_out: *mut usize,
+    ) -> CudaError;
+
+    pub fn l2_persist_ffn_phase1_gate_up(
+        stream: cudaStream_t,
+        gate_weights: *const u32,
+        up_weights: *const u32,
+        intermediate_size: c_int,
+        hidden_size: c_int,
+    ) -> CudaError;
+
+    pub fn l2_persist_ffn_phase2_down(
+        stream: cudaStream_t,
+        down_weights: *const u32,
+        hidden_size: c_int,
+        intermediate_size: c_int,
+    ) -> CudaError;
+
+    pub fn l2_persist_tiled(
+        stream: cudaStream_t,
+        weights: *const u32,
+        m: c_int,
+        n: c_int,
+        tile_index: c_int,
+        tile_count_out: *mut c_int,
+        tile_rows_out: *mut c_int,
+    ) -> CudaError;
+
+    pub fn l2_print_analysis(m: c_int, n: c_int, label: *const i8);
 }
 
 // =====================================================================

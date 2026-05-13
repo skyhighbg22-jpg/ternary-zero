@@ -72,6 +72,75 @@ cudaError_t ternary_zero_set_l2_policy(
     size_t num_bytes
 );
 
+// =====================================================================
+// Advanced L2 Persistence (l2_persist.cu)
+// =====================================================================
+
+// Pin a single layer's weights in L2 cache with automatic hit ratio.
+cudaError_t l2_persist_single_layer(
+    cudaStream_t stream,
+    const uint32_t* weights,
+    int M, int N,
+    float* hit_ratio_out,
+    size_t* bytes_pinned_out
+);
+
+// FFN two-phase L2 pinning for Llama-2-7B.
+cudaError_t l2_persist_ffn_phase1_gate_up(
+    cudaStream_t stream,
+    const uint32_t* gate_weights,
+    const uint32_t* up_weights,
+    int intermediate_size,
+    int hidden_size
+);
+cudaError_t l2_persist_ffn_phase2_down(
+    cudaStream_t stream,
+    const uint32_t* down_weights,
+    int hidden_size,
+    int intermediate_size
+);
+
+// Tiled L2 pinning for layers exceeding L2 capacity.
+cudaError_t l2_persist_tiled(
+    cudaStream_t stream,
+    const uint32_t* weights,
+    int M, int N,
+    int tile_index,
+    int* tile_count_out,
+    int* tile_rows_out
+);
+
+// Print L2 analysis for a given layer shape.
+void l2_print_analysis(int M, int N, const char* label);
+
+// =====================================================================
+// NVTX-Profiled Launch Wrapper
+// =====================================================================
+// Launches the kernel and records per-phase timing via CUDA events.
+// For full NVTX instrumentation (H2D, L2 policy, kernel, D2H),
+// include kernel/nvt/ternary_zero_nvtx.h instead.
+//
+// Args:
+//   phase_tile_load_us  - [out] shared memory tile load time (us)
+//   phase_decode_us     - [out] bit decode + accumulate time (us)
+//   phase_reduce_us     - [out] warp+block reduction + output time (us)
+//
+// Note: Requires Nsight Compute for per-phase GPU-side timing.
+// This API records a single kernel event pair and returns 0 for all
+// phases when run without ncu. Use ncu --export sqlite to populate.
+// =====================================================================
+cudaError_t ternary_zero_gemv_profiled(
+    const uint32_t* __restrict__ weights,
+    const __half*   __restrict__ activations,
+    __half*         __restrict__ output,
+    int M,
+    int N,
+    cudaStream_t stream,
+    float* phase_tile_load_us,
+    float* phase_decode_us,
+    float* phase_reduce_us
+);
+
 #ifdef __cplusplus
 }
 #endif

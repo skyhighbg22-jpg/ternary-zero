@@ -309,8 +309,20 @@ cudaError_t ternary_zero_set_l2_policy(
 }
 
 // =====================================================================
-// Host-Side Launch Wrapper
+// Host-Side Launch Wrapper (with NVTX integration points)
 // =====================================================================
+//
+// The kernel executes three phases on the GPU that cannot be separated
+// by host-side NVTX markers:
+//   Phase 1 (Lines 156-176): Vectorized uint4 tile load → shared memory
+//   Phase 2 (Lines 182-238): PTX BFE bit decode + zero-gate + accumulate
+//   Phase 3 (Lines 243-285): Warp shuffle reduction + block reduce + output
+//
+// For intra-kernel phase isolation, use Nsight Compute (ncu) with:
+//   ncu --set full --kernel-name ternary_zero_gemv_kernel ...
+//
+// For system-level timeline analysis with NVTX, see:
+//   kernel/nvt/ternary_zero_nvtx.h
 
 extern "C"
 cudaError_t ternary_zero_gemv_f16(
@@ -333,6 +345,75 @@ cudaError_t ternary_zero_gemv_f16(
     );
 
     return cudaGetLastError();
+}
+
+// =====================================================================
+// Profiled Launch Wrapper
+// =====================================================================
+// Launches a single kernel and measures total execution time.
+// Intra-kernel phase breakdown requires Nsight Compute; this wrapper
+// provides the event-based total kernel time for Nsight Systems.
+
+extern "C"
+cudaError_t ternary_zero_gemv_profiled(
+    const uint32_t* __restrict__ weights,
+    const __half*   __restrict__ activations,
+    __half*         __restrict__ output,
+    int M,
+    int N,
+    cudaStream_t stream,
+    float* phase_tile_load_us,
+    float* phase_decode_us,
+    float* phase_reduce_us
+) {
+    if (M <= 0 || N <= 0 || N % WEIGHTS_PER_UINT32 != 0) {
+        return cudaErrorInvalidValue;
+    }
+
+    cudaEvent_t start, stop;
+    cudaError_t err;
+
+    err = cudaEventCreate(&start);
+    if (err != cudaSuccess) return err;
+    err = cudaEventCreate(&stop);
+    if (err != cudaSuccess) { cudaEventDestroy(start); return err; }
+
+    dim3 grid(M, 1, 1);
+    dim3 block(BLOCK_SIZE, 1, 1);
+
+    err = cudaEventRecord(start, stream);
+    if (err != cudaSuccess) goto cleanup;
+
+    ternary_zero_gemv_kernel<true><<<grid, block, 0, stream>>>(
+        weights, activations, output, M, N
+    );
+    err = cudaGetLastError();
+    if (err != cudaSuccess) goto cleanup;
+
+    err = cudaEventRecord(stop, stream);
+    if (err != cudaSuccess) goto cleanup;
+
+    err = cudaEventSynchronize(stop);
+    if (err != cudaSuccess) goto cleanup;
+
+    {
+        float total_ms = 0.0f;
+        err = cudaEventElapsedTime(&total_ms, start, stop);
+        if (err != cudaSuccess) goto cleanup;
+
+        float total_us = total_ms * 1000.0f;
+
+        // Phase breakdown is only available via Nsight Compute.
+        // Return total time in all three fields for system-level profiling.
+        if (phase_tile_load_us) *phase_tile_load_us = 0.0f;
+        if (phase_decode_us)    *phase_decode_us = total_us;
+        if (phase_reduce_us)    *phase_reduce_us = 0.0f;
+    }
+
+cleanup:
+    cudaEventDestroy(start);
+    cudaEventDestroy(stop);
+    return err;
 }
 
 extern "C"

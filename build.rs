@@ -89,6 +89,7 @@ fn main() {
     println!("cargo:rerun-if-changed=kernel/ternary_zero.cu");
     println!("cargo:rerun-if-changed=kernel/ternary_zero.h");
     println!("cargo:rerun-if-changed=kernel/ptx_utils.h");
+    println!("cargo:rerun-if-changed=kernel/l2_persist.cu");
 
     let nvcc = find_nvcc();
 
@@ -97,35 +98,72 @@ fn main() {
     } else {
         "o"
     };
-    let obj_path = out_dir.join(format!("ternary_zero.{}", obj_ext));
 
-    let mut cmd = Command::new(&nvcc);
-    cmd.arg("-O3")
-        .arg("--use_fast_math")
-        .arg("-lineinfo")
-        .arg("-maxrregcount=64")
-        .arg("--gpu-architecture=sm_89")
-        .arg("-std=c++17")
-        .arg("-c")
-        .arg(format!("-I{}", kernel_dir.display()))
-        .arg("-o")
-        .arg(&obj_path)
-        .arg(kernel_dir.join("ternary_zero.cu"));
+    let mut obj_paths = Vec::new();
 
-    if cfg!(target_os = "windows") {
-        if let Some(msvc_bin) = find_msvc_bin() {
-            let current_path = env::var("PATH").unwrap_or_default();
-            let new_path = format!("{};{}", msvc_bin.display(), current_path);
-            cmd.env("PATH", &new_path);
+    // Compile ternary_zero.cu
+    let obj_main = out_dir.join(format!("ternary_zero.{}", obj_ext));
+    {
+        let mut cmd = Command::new(&nvcc);
+        cmd.arg("-O3")
+            .arg("--use_fast_math")
+            .arg("-lineinfo")
+            .arg("-maxrregcount=64")
+            .arg("--gpu-architecture=sm_89")
+            .arg("-std=c++17")
+            .arg("-c")
+            .arg(format!("-I{}", kernel_dir.display()))
+            .arg("-o")
+            .arg(&obj_main)
+            .arg(kernel_dir.join("ternary_zero.cu"));
+
+        if cfg!(target_os = "windows") {
+            if let Some(msvc_bin) = find_msvc_bin() {
+                let current_path = env::var("PATH").unwrap_or_default();
+                let new_path = format!("{};{}", msvc_bin.display(), current_path);
+                cmd.env("PATH", &new_path);
+            }
+        }
+
+        println!("cargo:warning=Running: {:?}", cmd);
+        let status = cmd.status().expect("Failed to execute nvcc");
+        if !status.success() {
+            panic!("nvcc compilation of ternary_zero.cu failed with status: {}", status);
         }
     }
+    obj_paths.push(obj_main);
 
-    println!("cargo:warning=Running: {:?}", cmd);
+    // Compile l2_persist.cu
+    let obj_l2 = out_dir.join(format!("l2_persist.{}", obj_ext));
+    {
+        let mut cmd = Command::new(&nvcc);
+        cmd.arg("-O3")
+            .arg("--use_fast_math")
+            .arg("-lineinfo")
+            .arg("-maxrregcount=64")
+            .arg("--gpu-architecture=sm_89")
+            .arg("-std=c++17")
+            .arg("-c")
+            .arg(format!("-I{}", kernel_dir.display()))
+            .arg("-o")
+            .arg(&obj_l2)
+            .arg(kernel_dir.join("l2_persist.cu"));
 
-    let status = cmd.status().expect("Failed to execute nvcc");
-    if !status.success() {
-        panic!("nvcc compilation failed with status: {}", status);
+        if cfg!(target_os = "windows") {
+            if let Some(msvc_bin) = find_msvc_bin() {
+                let current_path = env::var("PATH").unwrap_or_default();
+                let new_path = format!("{};{}", msvc_bin.display(), current_path);
+                cmd.env("PATH", &new_path);
+            }
+        }
+
+        println!("cargo:warning=Running: {:?}", cmd);
+        let status = cmd.status().expect("Failed to execute nvcc for l2_persist.cu");
+        if !status.success() {
+            panic!("nvcc compilation of l2_persist.cu failed with status: {}", status);
+        }
     }
+    obj_paths.push(obj_l2);
 
     if cfg!(target_os = "windows") {
         let lib_path = out_dir.join("ternary_zero.lib");
@@ -138,9 +176,10 @@ fn main() {
         } else {
             Command::new("lib")
         };
-        lib_cmd
-            .arg(format!("/OUT:{}", lib_path.display()))
-            .arg(&obj_path);
+        lib_cmd.arg(format!("/OUT:{}", lib_path.display()));
+        for obj in &obj_paths {
+            lib_cmd.arg(obj);
+        }
 
         let status = lib_cmd.status().expect("Failed to execute lib.exe");
         if !status.success() {
@@ -148,12 +187,12 @@ fn main() {
         }
     } else {
         let lib_path = out_dir.join("libternary_zero.a");
-        let status = Command::new("ar")
-            .arg("rcs")
-            .arg(&lib_path)
-            .arg(&obj_path)
-            .status()
-            .expect("Failed to execute ar");
+        let mut ar_cmd = Command::new("ar");
+        ar_cmd.arg("rcs").arg(&lib_path);
+        for obj in &obj_paths {
+            ar_cmd.arg(obj);
+        }
+        let status = ar_cmd.status().expect("Failed to execute ar");
         if !status.success() {
             panic!("ar failed to create static library");
         }
