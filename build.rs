@@ -128,7 +128,10 @@ fn main() {
         println!("cargo:warning=Running: {:?}", cmd);
         let status = cmd.status().expect("Failed to execute nvcc");
         if !status.success() {
-            panic!("nvcc compilation of ternary_zero.cu failed with status: {}", status);
+            panic!(
+                "nvcc compilation of ternary_zero.cu failed with status: {}",
+                status
+            );
         }
     }
     obj_paths.push(obj_main);
@@ -158,9 +161,14 @@ fn main() {
         }
 
         println!("cargo:warning=Running: {:?}", cmd);
-        let status = cmd.status().expect("Failed to execute nvcc for l2_persist.cu");
+        let status = cmd
+            .status()
+            .expect("Failed to execute nvcc for l2_persist.cu");
         if !status.success() {
-            panic!("nvcc compilation of l2_persist.cu failed with status: {}", status);
+            panic!(
+                "nvcc compilation of l2_persist.cu failed with status: {}",
+                status
+            );
         }
     }
     obj_paths.push(obj_l2);
