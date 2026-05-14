@@ -268,15 +268,28 @@ $$B_{\text{total}} = \frac{MN}{4} + 2N + 2M \quad \text{(bytes)}$$
 
 ### 2.3 Tensor Shape Matrix
 
-All benchmarks MUST report results across the following shape matrix:
+All benchmarks MUST report results across the following shape matrix.
+The 80-point configuration is implemented in `benchmarks/shape_matrix_benchmark.py`
+and outputs a structured `manifest.json` with per-configuration latency, throughput,
+and bandwidth metrics.
 
-| Parameter | Values | Rationale |
+| Parameter | Values | Count |
 |---|---|---|
-| $M$ (output rows) | {1, 4, 16, 64, 256} | Autoregressive (M=1) to small-batch |
-| $N$ (input features) | {1024, 2048, 4096, 8192} | Typical transformer hidden dims |
-| Sparsity $\rho_0$ | {0.0, 0.25, 0.50, 0.75} | Zero-weight fraction |
-| Activation dtype | FP16 | Primary target |
-| Weight dtype | Ternary (2-bit packed) | Primary target |
+| $M$ (output rows) | {1, 2, 4, 8, 16, 32, 64, 128} | 8 |
+| $N$ (input features) | {256, 512, 1024, 2048, 4096, 8192, 11008, 14336, 16384, 19456} | 10 |
+| **Total configurations** | | **80** |
+
+The $N$ values cover the full spectrum of transformer hidden dimensions:
+- **256–512:** Small/embedding layers
+- **1024–2048:** GPT-2 Small/Medium, Llama-3.2-1B attention dimensions
+- **4096–8192:** Llama-2-7B, Llama-3-8B, Llama-3.2-1B FFN intermediate
+- **11008:** Llama-2-7B FFN intermediate size
+- **14336:** Llama-3-8B FFN intermediate size
+- **16384–19456:** Large model FFN intermediates
+
+The $M$ values span the autoregressive decode regime ($M=1$) through small-batch
+inference ($M=128$). Sparsity $\rho_0$ is swept separately when the measured mode
+is available (requires GPU).
 
 **Baseline comparisons (MUST be measured on same hardware, same session):**
 - cuBLAS `cublasHgemv` (FP16 GEMV)
@@ -477,6 +490,48 @@ def measure_perplexity_degradation(model_fp16, model_ternary, dataset="wikitext-
 | FP16 accumulation | Precision loss for $N > 8192$ | Medium | Promote to `float` in final reduction |
 | Activation upload | Allocated per-call (`GpuBuffer::alloc`) | Low | Pre-allocate and cache in `BitLinear` |
 | Optimizer steps | Pure NumPy CPU — no GPU acceleration | Low | Acceptable for research; block for production |
+
+### 5.4 Deep Optimization Theory
+
+The following hardware-level optimization targets are specified in
+[ARCHITECTURE.md](ARCHITECTURE.md) §9. Their theoretical justification is:
+
+**`cp.async` staging:** The current `uint4` load path occupies the issuing warp for
+the full global memory latency (~200-400 cycles). `cp.async` transfers data directly
+from global memory to shared memory via the DMA engine, freeing the warp to perform
+weight decode in parallel. The expected speedup is:
+
+$$\Delta T_{\text{async}} = T_{\text{tile\_load}} - \max(T_{\text{tile\_load}} - T_{\text{decode}}, 0)$$
+
+where $T_{\text{tile\_load}}$ is the activation tile load time and $T_{\text{decode}}$
+is the weight decode time. For $N = 4096$, $T_{\text{tile\_load}} \approx T_{\text{decode}}$,
+so the overlap approaches 100% and the speedup approaches 2x for the staging phase.
+
+**SIMD-style bit decode:** The current BFE-based decode issues 3 instructions per weight
+(48 per packed word). Batch extraction via AND/SHR reduces this to 6-8 instructions for
+4 weights, improving instruction-level parallelism. The integer pipeline throughput limit
+is:
+
+$$T_{\text{decode}} = \max\left(\frac{N_{\text{bfe}}}{\Theta_{\text{int}}}, \frac{N_{\text{lop3}}}{\Theta_{\text{int}}}\right)$$
+
+Reducing $N_{\text{bfe}}$ by 4x directly reduces the decode ceiling.
+
+**L2 cache persistence:** The `cudaAccessPolicyWindow` API marks weight allocations as
+"persisting" in the 32 MB L2 cache on sm\_89. For autoregressive decoding where the same
+weight matrix is read for each generated token, this converts DRAM traffic to L2 traffic:
+
+$$BW_{\text{effective}} = BW_{\text{L2}} \cdot \text{hit\_ratio} + BW_{\text{DRAM}} \cdot (1 - \text{hit\_ratio})$$
+
+With `hitRatio = 1.0`, $BW_{\text{effective}} \approx BW_{\text{L2}} \approx 500\text{-}800$ GB/s,
+a 2-3x improvement over DRAM-only access.
+
+**KV-cache INT8 quantization:** The per-channel quantization error bound is:
+
+$$|e_k| \leq \frac{\max(k) - \min(k)}{510} \approx 0.004\text{-}0.008$$
+
+The attention score error $|\Delta \text{score}| \leq D \cdot |e_k| \cdot \max(|q|) \approx 0.77$
+is within tolerance for inference workloads. This enables 2x context extension (S=4096 instead
+of S=2048) at fixed VRAM.
 
 ---
 

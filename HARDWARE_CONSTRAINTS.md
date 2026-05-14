@@ -216,7 +216,9 @@ Estimated throughput:
 
 ### 3.4 Optimization: Double-Buffered Pipeline
 
-To overlap PCIe transfers with GPU computation, use two weight buffers and CUDA streams:
+To overlap PCIe transfers with GPU computation, use two weight buffers and CUDA streams.
+A complete double-buffered streaming engine is implemented in
+`ternary_zero/inference/streaming_engine.py`:
 
 ```
 Time →
@@ -226,6 +228,27 @@ Stream 1:        [H2D Layer K+1]  [GEMV Layer K+1]  [H2D Layer K+3]
 
 VRAM cost: 2 × 206 MB = 412 MB (still fits comfortably)
 Speedup: ~1.5-1.7× over sequential
+```
+
+**Implementation details:**
+- `AsyncLayerLoader` — Background daemon thread with condition-variable signaling,
+  loads next N layers ahead (`prefetch_depth=2`) from disk into pinned host memory
+- `DoubleBufferedStreamingEngine` — Maintains two buffer slots (A/B). While GPU
+  executes on slot A, the background thread fills slot B. Slots swap on each layer.
+- `GemvExecutor` — Auto-detects CUDA/Rust/NumPy backend for the GEMV compute path
+- `StreamingProfile` — Per-layer profiling: load time, compute time, effective
+  bandwidth, GPU utilization percentage
+
+**Usage:**
+```python
+from ternary_zero.inference import build_llama_streaming_engine
+
+engine, layers = build_llama_streaming_engine(
+    "llama-3.1-70b", weight_dir="./ternary_weights", prefetch_depth=2
+)
+output, profile = engine.execute_layers(activations)
+# profile.effective_bandwidth_gbps → effective PCIe utilization
+# profile.gpu_utilization_pct → GPU compute vs idle ratio
 ```
 
 ### 3.5 Optimization: L2 Cache Pinning for Frequently-Used Layers

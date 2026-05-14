@@ -250,6 +250,100 @@ sector-aligned (32-byte) boundaries.
 
 ---
 
+## Shape Matrix Benchmark Suite — 80-Point Configuration
+
+`benchmarks/shape_matrix_benchmark.py` executes an automated 80-point sweep across
+varying $M$ and $N$ dimensions, measuring kernel latency and throughput for each
+configuration. Results are serialized to `benchmarks/output/manifest.json`.
+
+### Configuration Matrix
+
+The 80-point matrix covers:
+
+| Parameter | Values | Count |
+|-----------|--------|-------|
+| $M$ (output rows) | {1, 2, 4, 8, 16, 32, 64, 128} | 8 |
+| $N$ (input features) | {256, 512, 1024, 2048, 4096, 8192, 11008, 14336, 16384, 19456} | 10 |
+| **Total configurations** | | **80** |
+
+The $N$ values cover the full spectrum of transformer hidden dimensions: from small
+embedding layers (256-512) through GPT-2/Llama attention dimensions (1024-2048) to
+FFN intermediate sizes (4096-19456). The $M$ values span autoregressive decode ($M=1$)
+through small-batch inference ($M=128$).
+
+### Measurement Protocol
+
+Each configuration uses `cudaEvent`-based timing when CUDA is available, falling back
+to `time.perf_counter()` for CPU-only measurements:
+
+1. **Warmup:** 50 iterations (default) to populate L2 cache and stabilize GPU clocks
+2. **Measurement:** 1000 iterations (default) with per-iteration timing
+3. **Statistics:** min, max, mean, median, p95, p99, standard deviation
+4. **Derived metrics:** GFLOPS ($2 \cdot M \cdot N \cdot 0.5 / t_{\text{median}}$),
+   effective bandwidth (GB/s)
+
+### Output Schema
+
+The `manifest.json` contains:
+
+```json
+{
+  "suite_name": "ternary-zero-shape-matrix",
+  "suite_version": "1.0.0",
+  "timestamp": "2026-05-14T13:00:00+0530",
+  "platform": "Windows 11 (26200) (AMD64)",
+  "gpu_name": "NVIDIA GeForce RTX 4060 Laptop GPU",
+  "cuda_version": "12.4",
+  "total_configs": 80,
+  "successful_configs": 80,
+  "failed_configs": 0,
+  "total_time_s": 245.3,
+  "warmup": 50,
+  "iterations": 1000,
+  "m_values": [1, 2, 4, 8, 16, 32, 64, 128],
+  "n_values": [256, 512, 1024, 2048, 4096, 8192, 11008, 14336, 16384, 19456],
+  "results": [
+    {
+      "m": 1, "n": 4096, "label": "M1_N4096",
+      "weight_bytes": 8192, "packed_weight_bytes": 1024,
+      "activation_bytes": 8192, "output_bytes": 2,
+      "min_us": 8.2, "max_us": 15.3, "mean_us": 9.1,
+      "median_us": 8.7, "p95_us": 11.2, "p99_us": 13.1,
+      "std_us": 1.1, "gflops": 0.94, "bandwidth_gbps": 1.18,
+      "num_iterations": 1000, "warmup": 50,
+      "backend": "cuda", "success": true, "error": null
+    }
+  ],
+  "summary": {
+    "latency_min_us": 2.1, "latency_max_us": 150.3,
+    "latency_mean_us": 25.7, "latency_median_us": 12.4,
+    "gflops_max": 45.2, "gflops_mean": 12.8,
+    "bandwidth_max_gbps": 180.5, "bandwidth_mean_gbps": 85.3,
+    "success_rate": 1.0,
+    "latency_by_m": { "1": {"mean_us": 5.2, "min_us": 2.1, "max_us": 15.3} },
+    "latency_by_n": { "4096": {"mean_us": 18.7, "min_us": 8.2, "max_us": 45.1} }
+  }
+}
+```
+
+### Running the Suite
+
+```bash
+# Full 80-point sweep with default settings
+python benchmarks/shape_matrix_benchmark.py
+
+# Custom warmup and iterations
+python benchmarks/shape_matrix_benchmark.py --warmup 100 --iterations 5000
+
+# Custom output path
+python benchmarks/shape_matrix_benchmark.py --output results/manifest.json
+
+# Quiet mode (suppress per-configuration output)
+python benchmarks/shape_matrix_benchmark.py --quiet
+```
+
+---
+
 ## Undeniable Benchmark (VRAM + Latency) — STRUCTURED-ANALYTICAL
 
 `benchmarks/undeniable_benchmark.py` computes VRAM footprint comparisons and
@@ -327,6 +421,10 @@ parameter) and does not require hardware validation.
 ## Running Benchmarks
 
 ```bash
+# Shape matrix benchmark (80-point M×N sweep → manifest.json)
+python benchmarks/shape_matrix_benchmark.py --warmup 50 --iterations 1000
+python benchmarks/shape_matrix_benchmark.py --output benchmarks/output/manifest.json
+
 # microGPT implementation comparison (all 6 backends)
 python benchmarks/run_benchmarks.py --train-steps 20 --inference-samples 5
 

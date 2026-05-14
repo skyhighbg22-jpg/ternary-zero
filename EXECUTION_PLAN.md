@@ -987,4 +987,53 @@ fit_model = "linear"  # latency = a + b * (1 - sparsity)
 
 ---
 
-*This document is binding. All implementation work MUST reference the workstream IDs (P1–P5), objective IDs (Pn-ON), and acceptance criteria defined herein. Deviations require explicit override via a superseding ADR or amendment to this plan.*
+## 8. Workstream P7: Version 1.0 Milestones (Model Patcher + Shape Matrix + PCIe Streaming)
+
+### 8.1 Problem Statement
+
+The project requires three critical engineering components to transition from a research prototype to an empirically validated inference system: (1) a HuggingFace model patcher for streaming ternary quantization, (2) an automated 80-point shape matrix benchmark suite, and (3) a double-buffered PCIe streaming engine for ultra-large-model inference. See [ROADMAP.md](ROADMAP.md) for the complete specification.
+
+### 8.2 Technical Objectives
+
+| ID | Objective | Scope |
+|---|---|---|
+| P7-O1 | **HuggingFace Model Patcher** | Streaming safetensors reader, chunked quantization, OOM-safe conversion, `patch_manifest.json` output |
+| P7-O2 | **Shape Matrix Benchmark Suite** | 80-point $M \times N$ sweep, `cudaEvent` timing, `manifest.json` with aggregate statistics |
+| P7-O3 | **Double-Buffered PCIe Streaming** | Async layer loader thread, double-buffer slot management, `StreamingProfile` per-layer metrics |
+| P7-O4 | **Deep Optimization Specifications** | `cp.async` staging, SIMD-style bit decode, L2 persistence tuning, KV-cache quantization design |
+
+### 8.3 Deliverables
+
+| Deliverable | Format | Location | Status |
+|---|---|---|---|
+| Model patcher | Python | `ternary_zero/inference/model_patcher.py` | **Implemented** |
+| Shape matrix benchmark | Python | `benchmarks/shape_matrix_benchmark.py` | **Implemented** |
+| Streaming engine | Python | `ternary_zero/inference/streaming_engine.py` | **Implemented** |
+| Deep optimization spec | Markdown | `ARCHITECTURE.md` §9 | **Documented** |
+| Roadmap document | Markdown | `ROADMAP.md` | **Documented** |
+
+### 8.4 Success Metrics
+
+| Metric | Target | Measurement |
+|---|---|---|
+| Model patcher: Llama-3.2-1B conversion | Complete without OOM | `patch_manifest.json` generated |
+| Model patcher: Peak host RAM | < 4 GB during 1B model conversion | `tracemalloc` |
+| Shape matrix: Configuration coverage | 80/80 data points | `manifest.successful_configs == 80` |
+| Shape matrix: Execution time | < 10 minutes for full sweep | `manifest.total_time_s` |
+| Streaming: Layer descriptor correctness | All Llama projections generated | `build_llama_streaming_engine()` test |
+| Streaming: Async loader thread safety | Zero deadlocks | 1000-iteration stress test |
+| Deep optimization: `cp.async` spec | Complete implementation specification | `ARCHITECTURE.md` §9.1 |
+| Deep optimization: KV-cache quantization | INT8 design with error bounds | `ARCHITECTURE.md` §9.4 |
+
+### 8.5 Strategic Justification
+
+P7 is the **empirical validation layer** that converts theoretical claims into measured data:
+
+1. **M1 (Model Patcher)** enables end-to-end model conversion from HuggingFace → ternary format, which M2 and M3 consume.
+2. **M2 (Shape Matrix)** produces the 80-point latency/throughput dataset required for peer-reviewed publication.
+3. **M3 (PCIe Streaming)** enables 70B+ model execution on consumer hardware, demonstrating the system's unique value proposition.
+4. **Deep Optimization** specifies the kernel-level improvements that close the gap between achieved and theoretical bandwidth.
+
+---
+
+*This document is binding. All implementation work MUST reference the workstream IDs (P1–P7), objective IDs (Pn-ON), and acceptance criteria defined herein. Deviations require explicit override via a superseding ADR or amendment to this plan.*

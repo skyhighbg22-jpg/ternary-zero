@@ -701,3 +701,233 @@ No profiling data or benchmark results are included in this documentation. The `
 - **Single-precision warp reduction only**: The kernel accumulates in FP32 but writes FP16 output. For very large N (>=65536), even FP32 may accumulate rounding error.
 - **No weight-only quantization for activations**: Activations remain FP16. W4A8 or similar schemes are not supported.
 - **Synchronous path uses null-stream semantics**: The sync `forward()` relies on implicit synchronization through blocking `cudaMemcpy` on the null stream, but the kernel is launched on a non-default stream. This works because blocking streams synchronize with all preceding work, but it's an implicit coupling.
+
+---
+
+## 9. Deep Optimization Targets
+
+This section specifies low-level hardware optimization targets for the CUDA kernel. These are engineering targets for post-v1.0 development, prioritized by their impact on the memory-bandwidth-bound GEMV execution model.
+
+### 9.1 Shared Memory Tiling with `cp.async`
+
+#### 9.1.1 Current State
+
+Activations are staged from global memory to shared memory using `uint4` (128-bit) loads:
+
+```cuda
+const uint4* src_vec = reinterpret_cast<const uint4*>(activations + tile_start);
+for (int i = tid; i < vec_count; i += BLOCK_SIZE) {
+    uint4 v = src_vec[i];               // blocking: warp stalls until data arrives
+    const __half* h = reinterpret_cast<const __half*>(&v);
+    for (int j = 0; j < 8; j++)
+        s_act[smem_idx(base + j)] = h[j];
+}
+```
+
+The warp issuing the load **occupies an SM slot** while waiting for global memory latency (~200-400 cycles). This is wasted compute capacity.
+
+#### 9.1.2 Target: Asynchronous Copy Pipeline
+
+Replace blocking loads with `cp.async` (available on sm\_80+) to decouple the warp from the memory transfer:
+
+```cuda
+// Phase 1: Initiate async copies (non-blocking)
+for (int i = tid; i < vec_count; i += BLOCK_SIZE) {
+    int base = i * 8;
+    int smem_offset = smem_idx(base);
+    // 16-byte async copy: global → shared, bypasses registers
+    cp.async<16>(
+        reinterpret_cast<uint4*>(&s_act[smem_offset]),
+        reinterpret_cast<const uint4*>(&activations[tile_start + base]),
+        16
+    );
+}
+
+// Phase 2: Commit the async copy group
+cp.async.commit_group();
+
+// Phase 3: Wait for completion before compute
+cp.async.wait_group<0>();
+```
+
+**Key advantages:**
+1. **Register bypass** — Data moves directly from global memory to shared memory without occupying registers.
+2. **Warp freedom** — The issuing warp can perform other work (weight decode, zero-gate setup) while copies are in flight.
+3. **Bulk synchronization** — `commit_group()` / `wait_group()` replaces per-load synchronization with a single barrier.
+
+**Expected impact:** 5-15% latency reduction for $N \geq 4096$ by overlapping activation staging with weight decode.
+
+**Compatibility:** `cp.async` requires sm\_80+. On sm\_70/sm\_75, the kernel must fall back to the current `uint4` load path via `#ifdef __CUDA_ARCH__` guards.
+
+### 9.2 PTX Bit-Manipulation: SIMD-Style Weight Extraction
+
+#### 9.2.1 Current State
+
+Each 2-bit weight is extracted individually using three `bfe.u32` instructions:
+
+```cuda
+PTX_BFE(bits_w0, packed, w * 2, 2);      // extract 2-bit field
+PTX_BFE(sign_w0, bits_w0, 1, 1);         // extract sign bit
+PTX_BFE(mag_w0,  bits_w0, 0, 1);         // extract magnitude bit
+```
+
+For 16 weights per packed word, this produces 48 `bfe.u32` instructions. While each is single-cycle, they compete for the integer issue slot with other decode operations.
+
+#### 9.2.2 Target: Batch Extraction via Bitwise AND/SHR
+
+Prepare multiple weights for zero-gating using parallel bitwise operations:
+
+```cuda
+// Extract 4 weights at once (bits [7:0] of packed word)
+uint32_t w01_pair = packed & 0x0000000F;          // bits [3:0]
+uint32_t w23_pair = (packed >> 4) & 0x0000000F;   // bits [7:4]
+
+// Zero-gate mask: nz = sign | mag for each 2-bit field
+uint32_t nz_01 = w01_pair | (w01_pair >> 1);      // magnitude OR sign
+uint32_t nz_23 = w23_pair | (w23_pair >> 1);
+
+// Sign-flip mask: sign bit → FP16 sign bit position
+uint32_t sign_01 = (w01_pair >> 1) & 0x00010001;  // replicate into FP16 slots
+uint32_t sign_23 = (w23_pair >> 1) & 0x00010001;
+
+// Zero-gate: AND with negated nz → 0xFFFFFFFF or 0x00000000
+uint32_t gate_01 = -(nz_01 & 0x1) | (-(nz_01 & 0x10) << 16);
+uint32_t gate_23 = -(nz_23 & 0x1) | (-(nz_23 & 0x10) << 16);
+```
+
+**Instruction count comparison:**
+
+| Approach | Instructions per 4 Weights | Pipeline |
+|----------|---------------------------|----------|
+| Current (BFE × 3 × 4) | 12 | Integer (serial) |
+| Target (AND/SHR/OR) | 6-8 | Integer (parallel) |
+
+**Expected impact:** 10-20% reduction in integer pipeline pressure for the decode phase, improving instruction-level parallelism.
+
+**Trade-off:** The SIMD-style approach is less readable and requires careful bit-position management. It should be gated behind a `#define TERNARY_USE_SIMD_DECODE` flag to allow fallback to the BFE path for debugging.
+
+### 9.3 L2 Cache Persistence via `cudaAccessPolicyWindow`
+
+#### 9.3.1 Hardware Context
+
+The RTX 4060 (Ada Lovelace, sm\_89) has a **32 MB L2 cache** shared across all SMs. The L2 cache is partitioned into 32-byte sectors. By default, the cache uses an LRU (Least Recently Used) eviction policy, which can evict weight data when activation tiles compete for capacity.
+
+During autoregressive decoding, the **same weight matrix** is read repeatedly for each generated token (different input vectors, same packed weights). This makes weight data ideal for L2 persistence.
+
+#### 9.3.2 Implementation
+
+The kernel uses `cudaStreamSetAttribute` to configure an access policy window on the CUDA stream:
+
+```cuda
+cudaError_t ternary_zero_set_l2_policy(
+    cudaStream_t stream,
+    const void* base_ptr,
+    size_t num_bytes
+) {
+    cudaStreamAttrValue attr = {};
+    attr.accessPolicyWindow.base_ptr  = const_cast<void*>(base_ptr);
+    attr.accessPolicyWindow.num_bytes = num_bytes;
+    attr.accessPolicyWindow.hitRatio  = 1.0f;    // Pin 100% of allocation
+    attr.accessPolicyWindow.hitProp   = cudaAccessPropertyPersisting;
+    attr.accessPolicyWindow.missProp  = cudaAccessPropertyStreaming;
+
+    return cudaStreamSetAttribute(
+        stream,
+        CUDA_STREAM_ATTRIBUTE_ACCESS_POLICY_WINDOW,
+        &attr
+    );
+}
+```
+
+#### 9.3.3 Layer-Level Persistence Strategy
+
+For a single transformer layer with the following projections:
+
+| Projection | Shape | Ternary Bytes | L2 % |
+|-----------|-------|--------------|------|
+| Q | [2048, 2048] | 0.25 MB | 0.8% |
+| K | [512, 2048] | 0.06 MB | 0.2% |
+| V | [512, 2048] | 0.06 MB | 0.2% |
+| O | [2048, 2048] | 0.25 MB | 0.8% |
+| Gate | [8192, 2048] | 1.00 MB | 3.1% |
+| Up | [8192, 2048] | 1.00 MB | 3.1% |
+| Down | [2048, 8192] | 1.00 MB | 3.1% |
+| **Total** | | **3.62 MB** | **11.3%** |
+
+For Llama-3.2-1B, a single layer's weights (3.62 MB) fit comfortably in the 32 MB L2 cache with 88.7% headroom. This allows **all 7 projections** to be pinned simultaneously.
+
+For larger models (Llama-2-7B FFN: 10.75 MB per projection), two projections combined (21.5 MB) still fit with 33% headroom. The implementation must select which projections to pin based on their access frequency during a single token decode.
+
+#### 9.3.4 Persistence Lifecycle
+
+```
+For each generated token:
+  For each layer:
+    1. Set L2 policy: pin current layer's weights as persisting
+    2. Execute GEMV operations (Q, K, V, O, Gate, Up, Down)
+    3. L2 retains weight data across all 7 GEMV calls
+    4. Next layer: new cudaAccessPolicyWindow replaces previous
+    5. Previous layer's weights evicted on next L2 miss (natural LRU)
+```
+
+**Expected impact:** 2-5x reduction in DRAM traffic for repeated GEMV invocations within a single layer. The L2 hit rate for weight accesses should approach 100% for models where per-layer weight memory fits in 32 MB.
+
+#### 9.3.5 Multi-Stream Limitation
+
+Only one `cudaAccessPolicyWindow` is active per stream at any time. If multiple streams are used (e.g., for the double-buffered streaming engine), each stream must independently configure its own policy window. This is handled by the `StreamingWeights` API in the Rust layer.
+
+### 9.4 KV-Cache Quantization
+
+#### 9.4.1 Problem Statement
+
+At 70B scale with sequence length $S = 2048$, the FP16 KV-cache consumes 640 MB of VRAM. This is the second-largest VRAM consumer after the (streamed) weights and the primary limiter of maximum context length.
+
+#### 9.4.2 Quantization Scheme
+
+| Precision | Bytes/Entry | KV-Cache Size (70B, S=2048) | Context Expansion |
+|-----------|-------------|---------------------------|-------------------|
+| FP16 (current) | 2.0 | 640 MB | baseline |
+| INT8 (per-channel) | 1.0 | 320 MB | 2x longer context |
+| INT4 (per-channel) | 0.5 | 160 MB | 4x longer context |
+| INT4 (per-group, group=128) | 0.5 + overhead | ~170 MB | ~3.8x longer context |
+
+#### 9.4.3 Implementation Approach
+
+**Per-channel INT8 quantization** for keys and values:
+
+$$k_{\text{quant}} = \text{round}\left(\frac{k - z}{s}\right), \quad s = \frac{\max(k) - \min(k)}{255}, \quad z = \min(k)$$
+
+Dequantization occurs in registers during the attention dot-product:
+
+$$\text{score}_{h,t} = \sum_{d=0}^{D-1} q_{h,d} \cdot (s_k \cdot k_{\text{quant},t,d} + z_k)$$
+
+This preserves the quantized KV-cache in global memory (INT8) while computing in FP16/FP32.
+
+#### 9.4.4 Attention Fidelity
+
+INT8 KV-cache quantization introduces per-element error bounded by:
+
+$$|e_k| \leq \frac{s_k}{2} = \frac{\max(k) - \min(k)}{510}$$
+
+For normalized attention heads (post-RMSNorm), $\max(k) - \min(k) \approx 2\text{-}4$, giving $|e_k| \approx 0.004\text{-}0.008$. The attention score error is:
+
+$$|\Delta \text{score}| \leq D \cdot |e_k| \cdot \max(|q|) \approx 128 \times 0.006 \times 1.0 = 0.77$$
+
+This is within the tolerance for most inference workloads. For precision-sensitive applications, per-group quantization (group size 64-128) reduces the error by 2-4x at the cost of slightly more storage overhead.
+
+#### 9.4.5 Expected Impact
+
+- **2x context extension** at INT8: S=4096 instead of S=2048 for 70B on 8 GB VRAM
+- **4x context extension** at INT4: S=8192 instead of S=2048 for 70B on 8 GB VRAM
+- **Negligible quality degradation** for INT8; measurable but acceptable degradation for INT4
+
+### 9.5 Optimization Priority Matrix
+
+| Optimization | Complexity | Latency Impact | VRAM Impact | Priority |
+|-------------|-----------|---------------|-------------|----------|
+| `cp.async` staging | Medium | 5-15% | None | **P1** |
+| SIMD-style bit decode | Medium | 10-20% (decode phase) | None | **P1** |
+| L2 persistence tuning | Low | 2-5x (DRAM traffic) | None | **P0** |
+| KV-cache INT8 | Medium | None | 2x context | **P2** |
+| KV-cache INT4 | High | None | 4x context | **P3** |
+| Fused GEMV+Norm | High | 15-25% (3→1 launch) | None | **P2** |
