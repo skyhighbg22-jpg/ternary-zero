@@ -464,3 +464,153 @@ Results are saved to `benchmarks/results.json` and `benchmarks/comparison_table.
 Undeniable benchmark results are saved to `benchmarks/undeniable_results.json`.
 
 See [EXECUTION_PLAN.md](./EXECUTION_PLAN.md) for detailed benchmarking procedures.
+
+---
+
+## Transformer-Scale Benchmark Suite — METHODOLOGY
+
+`benchmarks/llama_transformer_benchmark.py` and `benchmarks/fp16_baseline.py` provide
+end-to-end validation on Llama-family transformers (1B → 70B), bridging the gap between
+microGPT (4,192 params) kernel benchmarks and the paper's deployment-scale claims.
+
+### Problem Statement
+
+The existing microGPT benchmarks validate kernel-level correctness and relative backend
+performance, but at 4,192 parameters the model is too small for ternary quantization to
+produce meaningful outputs (0 tokens generated). The paper's deployment claims reference
+7B, 13B, and 70B models. The transformer-scale benchmark suite provides empirical evidence
+at these scales.
+
+### Benchmark Phases
+
+| Phase | Script | Measures | Status |
+|-------|--------|----------|--------|
+| **Phase 1: Quantization** | `llama_transformer_benchmark.py` | Layer-wise compression, sparsity distribution, quantize time | READY |
+| **Phase 2: Inference** | `llama_transformer_benchmark.py` | Tokens/sec, TTFT, per-token latency, VRAM | READY |
+| **Phase 3: Perplexity** | `llama_transformer_benchmark.py` | WikiText-2 PPL (ternary vs FP16) | READY |
+| **Phase 4: Context Scaling** | `llama_transformer_benchmark.py` | Max context length at fixed VRAM | READY |
+| **FP16 Baseline** | `fp16_baseline.py` | FP16 reference measurements for comparison | READY |
+
+### Measurement Protocol
+
+1. **Quantization fidelity**: Each weight matrix is quantized via STE-aware ternary
+   thresholding (α=0.5), packed to uint32 (16 weights/word). Per-layer sparsity and
+   scale statistics are recorded.
+
+2. **Inference throughput**: Autoregressive decode with KV-cache. Prefill measures
+   prompt processing rate. Decode measures token generation rate. All timings use
+   `time.perf_counter()` with GPU sync where available.
+
+3. **Perplexity**: Log-probability accumulation over WikiText-2 validation split.
+   Reports negative log-likelihood exponentiated to perplexity. Compared against
+   HuggingFace FP16 baseline using identical tokenization.
+
+4. **Context scaling**: Analytical computation of max context length at fixed VRAM
+   budget (default 7.5 GB for RTX 4060). Compares ternary vs FP16 weight residency
+   and resulting KV-cache headroom.
+
+### Running the Suite
+
+```bash
+# Single model benchmark (all 4 phases)
+python benchmarks/llama_transformer_benchmark.py --preset llama-3.2-1b
+
+# Single model with custom model path
+python benchmarks/llama_transformer_benchmark.py --model /path/to/llama-2-7b
+
+# Quick mode (fewer tokens/chunks for rapid iteration)
+python benchmarks/llama_transformer_benchmark.py --preset llama-3.2-1b --quick
+
+# Skip perplexity (saves time during development)
+python benchmarks/llama_transformer_benchmark.py --preset llama-2-7b --skip-perplexity
+
+# Full sweep across all presets
+python benchmarks/llama_transformer_benchmark.py --all-presets --quick
+
+# FP16 baseline (requires HuggingFace transformers + GPU)
+python benchmarks/fp16_baseline.py --model meta-llama/Llama-3.2-1B --perplexity
+
+# FP16 baseline with comparison to ternary results
+python benchmarks/fp16_baseline.py --model meta-llama/Llama-3.2-1B \
+    --compare benchmarks/output/transformer_bench_llama_3_2_1b.json
+```
+
+### Supported Models
+
+| Preset | Model | Params | Hidden | Layers | Ternary Weight MB | FP16 Weight MB |
+|--------|-------|--------|--------|--------|-------------------|----------------|
+| `llama-3.2-1b` | Llama-3.2-1B | 1.5B | 2048 | 16 | ~357 MB | ~2,858 MB |
+| `llama-2-7b` | Llama-2-7B | 6.7B | 4096 | 32 | ~1,688 MB | ~13,500 MB |
+| `llama-3-8b` | Llama-3-8B | 8.0B | 4096 | 32 | ~2,000 MB | ~16,000 MB |
+| `llama-2-13b` | Llama-2-13B | 13B | 5120 | 40 | ~3,250 MB | ~26,000 MB |
+| `llama-3.1-70b` | Llama-3.1-70B | 70.6B | 8192 | 80 | ~17,650 MB | ~141,200 MB |
+
+### Dependencies
+
+```bash
+pip install transformers safetensors torch datasets accelerate
+maturin develop --release  # For GPU kernel acceleration
+```
+
+### Output Schema
+
+Results are saved to `benchmarks/output/transformer_bench_<preset>.json`:
+
+```json
+{
+  "timestamp": "2026-05-14T15:00:00+0530",
+  "platform": "Windows 11 (26200) (AMD64)",
+  "gpu_name": "NVIDIA GeForce RTX 4060 Laptop GPU",
+  "quantization": {
+    "model_name": "Llama-3.2-1B",
+    "total_params": 1498482688,
+    "compression_vs_fp16": 7.98,
+    "mean_sparsity": 0.33,
+    "quantize_time_s": 45.2
+  },
+  "inference": {
+    "decode_tokens_per_sec": 12.5,
+    "prefill_tokens_per_sec": 85.3,
+    "time_to_first_token_s": 0.12,
+    "per_token_latency_ms": 80.0,
+    "kv_cache_mb": 64.0
+  },
+  "perplexity": {
+    "ternary_ppl": 15.23,
+    "fp16_ppl": 8.45,
+    "ppl_degradation": 6.78
+  },
+  "context_scaling": {
+    "max_context_ternary": 131072,
+    "max_context_fp16": 16384,
+    "scaling_ratio": 8.0
+  }
+}
+```
+
+### Key Metrics for Paper
+
+| Metric | What It Proves | Target |
+|--------|---------------|--------|
+| Compression vs FP16 ≥ 8x | Weight memory reduction is real | Mathematical certainty |
+| Decode tok/s > 0 | Ternary model generates coherent text | Functional correctness |
+| Ternary PPL < 30 (1B) | Quantized model retains knowledge | Quality preservation |
+| PPL degradation < 2x FP16 | Acceptable quality tradeoff | Research contribution |
+| Context scaling > 4x | Memory savings enable longer sequences | Deployment value |
+| Per-token latency < FP16 | Faster decode due to reduced bandwidth | Performance claim |
+
+### Bridging the Scale Gap
+
+The benchmark suite addresses the microGPT-to-LLaMA discrepancy in three ways:
+
+1. **Same kernel, real workload**: Uses the identical Ternary-Zero GEMV kernel that
+   microGPT benchmarks validate, but executes it across 16-80 transformer layers with
+   real weight matrices (2048×8192 to 8192×28672) instead of synthetic 16×16 shapes.
+
+2. **FP16 apples-to-apples comparison**: `fp16_baseline.py` runs the same prompt through
+   the same HuggingFace model in FP16, measuring identical metrics on identical hardware.
+   This eliminates confounding variables from the speedup claims.
+
+3. **Perplexity-grounded quality assessment**: WikiText-2 perplexity is the standard
+   metric for language model quality. Reporting ternary PPL alongside FP16 PPL provides
+   the evidence reviewers need to assess whether compression degrades model utility.
