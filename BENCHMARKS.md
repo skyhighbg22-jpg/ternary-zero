@@ -369,8 +369,8 @@ The script operates in two modes:
 **No.** No model weights were downloaded for any benchmark in this document.
 The VRAM footprint calculations are purely arithmetic:
 `total_params × bytes_per_param = weight_memory`. Parameter counts are derived
-from architecture constants (e.g., Llama-3.2-1B: hidden=2048, intermediate=8192,
-layers=16, vocab=128256, heads=32, kv_heads=8).
+from architecture constants (e.g., Llama-3.2-3B: hidden=3072, intermediate=8192,
+layers=28, vocab=128256, heads=24, kv_heads=8).
 
 ### Were benchmarks re-run after updates?
 
@@ -384,22 +384,22 @@ passed with zero warnings.
 ### Execution output (2026-05-13)
 
 ```
-Model: Llama-3.2-1B (1,498,482,688 parameters)
+Model: Llama-3.2-3B (3,212,739,072 parameters)
 
 VRAM Footprint:
-  FP32:        5716.26 MB  (baseline)
-  FP16:        2858.13 MB  (1.0x)
-  INT8:        1429.06 MB  (2.0x)
-  INT4:         714.53 MB  (4.0x)
-  Ternary-Zero: 357.27 MB  (8.0x)  <-- proof of >= 6x reduction
+  FP32:        12255.33 MB  (baseline)
+  FP16:        6127.66 MB  (1.0x)
+  INT8:        3063.83 MB  (2.0x)
+  INT4:        1531.92 MB  (4.0x)
+  Ternary-Zero: 765.96 MB  (8.0x)  <-- proof of >= 6x reduction
 
-FFN Layer (Llama-3.2-1B):
-  gate_proj (8192x2048):  4.00 MB ternary vs 32.00 MB FP16 (8.0x, 12.5% L2)
-  up_proj   (8192x2048):  4.00 MB ternary vs 32.00 MB FP16 (8.0x, 12.5% L2)
-  down_proj (2048x8192):  4.00 MB ternary vs 32.00 MB FP16 (8.0x, 12.5% L2)
+FFN Layer (Llama-3.2-3B):
+  gate_proj (8192x3072):  6.00 MB ternary vs 48.00 MB FP16 (8.0x, 18.8% L2)
+  up_proj   (8192x3072):  6.00 MB ternary vs 48.00 MB FP16 (8.0x, 18.8% L2)
+  down_proj (3072x8192):  6.00 MB ternary vs 48.00 MB FP16 (8.0x, 18.8% L2)
 
 M=1 GEMV Latency Estimates (RTX 4060, 272 GB/s peak):
-  1x2048:   ~2.02 us (memory floor)
+  1x3072:   ~2.03 us (memory floor)
   1x8192:   ~2.07 us
   1x4096:   ~2.03 us
   1x11008:  ~2.09 us
@@ -436,7 +436,7 @@ python benchmarks/impl_pytorch.py          # PyTorch only
 python benchmarks/impl_cupy.py             # CuPy only
 
 # Undeniable benchmark (VRAM footprint + latency estimates)
-python benchmarks/undeniable_benchmark.py                          # Llama-3.2-1B
+python benchmarks/undeniable_benchmark.py                          # Llama-3.2-3B
 python benchmarks/undeniable_benchmark.py --model llama-2-7b       # Llama-2-7B
 python benchmarks/undeniable_benchmark.py --quick                  # Fewer iterations
 
@@ -513,13 +513,13 @@ at these scales.
 
 ```bash
 # Single model benchmark (all 4 phases)
-python benchmarks/llama_transformer_benchmark.py --preset llama-3.2-1b
+python benchmarks/llama_transformer_benchmark.py --preset llama-3.2-3b
 
 # Single model with custom model path
 python benchmarks/llama_transformer_benchmark.py --model /path/to/llama-2-7b
 
 # Quick mode (fewer tokens/chunks for rapid iteration)
-python benchmarks/llama_transformer_benchmark.py --preset llama-3.2-1b --quick
+python benchmarks/llama_transformer_benchmark.py --preset llama-3.2-3b --quick
 
 # Skip perplexity (saves time during development)
 python benchmarks/llama_transformer_benchmark.py --preset llama-2-7b --skip-perplexity
@@ -528,18 +528,18 @@ python benchmarks/llama_transformer_benchmark.py --preset llama-2-7b --skip-perp
 python benchmarks/llama_transformer_benchmark.py --all-presets --quick
 
 # FP16 baseline (requires HuggingFace transformers + GPU)
-python benchmarks/fp16_baseline.py --model meta-llama/Llama-3.2-1B --perplexity
+python benchmarks/fp16_baseline.py --model meta-llama/Llama-3.2-3B --perplexity
 
 # FP16 baseline with comparison to ternary results
-python benchmarks/fp16_baseline.py --model meta-llama/Llama-3.2-1B \
-    --compare benchmarks/output/transformer_bench_llama_3_2_1b.json
+python benchmarks/fp16_baseline.py --model meta-llama/Llama-3.2-3B \
+    --compare benchmarks/output/transformer_bench_llama_3_2_3b.json
 ```
 
 ### Supported Models
 
 | Preset | Model | Params | Hidden | Layers | Ternary Weight MB | FP16 Weight MB |
 |--------|-------|--------|--------|--------|-------------------|----------------|
-| `llama-3.2-1b` | Llama-3.2-1B | 1.5B | 2048 | 16 | ~357 MB | ~2,858 MB |
+| `llama-3.2-3b` | Llama-3.2-3B | 3.2B | 3072 | 28 | ~766 MB | ~6,128 MB |
 | `llama-2-7b` | Llama-2-7B | 6.7B | 4096 | 32 | ~1,688 MB | ~13,500 MB |
 | `llama-3-8b` | Llama-3-8B | 8.0B | 4096 | 32 | ~2,000 MB | ~16,000 MB |
 | `llama-2-13b` | Llama-2-13B | 13B | 5120 | 40 | ~3,250 MB | ~26,000 MB |
@@ -562,8 +562,8 @@ Results are saved to `benchmarks/output/transformer_bench_<preset>.json`:
   "platform": "Windows 11 (26200) (AMD64)",
   "gpu_name": "NVIDIA GeForce RTX 4060 Laptop GPU",
   "quantization": {
-    "model_name": "Llama-3.2-1B",
-    "total_params": 1498482688,
+    "model_name": "Llama-3.2-3B",
+    "total_params": 3212739072,
     "compression_vs_fp16": 7.98,
     "mean_sparsity": 0.33,
     "quantize_time_s": 45.2
@@ -594,7 +594,7 @@ Results are saved to `benchmarks/output/transformer_bench_<preset>.json`:
 |--------|---------------|--------|
 | Compression vs FP16 ≥ 8x | Weight memory reduction is real | Mathematical certainty |
 | Decode tok/s > 0 | Ternary model generates coherent text | Functional correctness |
-| Ternary PPL < 30 (1B) | Quantized model retains knowledge | Quality preservation |
+| Ternary PPL < 30 (3B) | Quantized model retains knowledge | Quality preservation |
 | PPL degradation < 2x FP16 | Acceptable quality tradeoff | Research contribution |
 | Context scaling > 4x | Memory savings enable longer sequences | Deployment value |
 | Per-token latency < FP16 | Faster decode due to reduced bandwidth | Performance claim |
@@ -605,7 +605,7 @@ The benchmark suite addresses the microGPT-to-LLaMA discrepancy in three ways:
 
 1. **Same kernel, real workload**: Uses the identical Ternary-Zero GEMV kernel that
    microGPT benchmarks validate, but executes it across 16-80 transformer layers with
-   real weight matrices (2048×8192 to 8192×28672) instead of synthetic 16×16 shapes.
+   real weight matrices (3072×8192 to 8192×28672) instead of synthetic 16×16 shapes.
 
 2. **FP16 apples-to-apples comparison**: `fp16_baseline.py` runs the same prompt through
    the same HuggingFace model in FP16, measuring identical metrics on identical hardware.

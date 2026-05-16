@@ -446,10 +446,10 @@ int main(int argc, char** argv) {
 
     // Shapes: real FFN layer dimensions from Llama-family models
     std::vector<BenchConfig> configs = {
-        // Llama-3.2-1B: hidden=2048, intermediate=8192
-        {1, 2048,  200, 5000, "Llama-1B hidden"},
-        {1, 8192,  200, 5000, "Llama-1B FFN up"},
-        {1, 2048,  200, 5000, "Llama-1B FFN down"},
+        // Llama-3.2-3B: hidden=3072, intermediate=8192
+        {1, 3072,  200, 5000, "Llama-3B hidden"},
+        {1, 8192,  200, 5000, "Llama-3B FFN up"},
+        {1, 3072,  200, 5000, "Llama-3B FFN down"},
 
         // Llama-2-7B: hidden=4096, intermediate=11008
         {1, 4096,  200, 5000, "Llama-7B hidden"},

@@ -13,9 +13,9 @@ Produces:
   - Speedup/compression comparison table
 
 Usage:
-  python benchmarks/fp16_baseline.py --model meta-llama/Llama-3.2-1B
+  python benchmarks/fp16_baseline.py --model meta-llama/Llama-3.2-3B
   python benchmarks/fp16_baseline.py --model meta-llama/Llama-2-7b --max-tokens 64
-  python benchmarks/fp16_baseline.py --compare benchmarks/output/transformer_bench_llama_3_2_1b.json
+  python benchmarks/fp16_baseline.py --compare benchmarks/output/transformer_bench_llama_3_2_3b.json
 
 Requires:
   pip install transformers torch accelerate

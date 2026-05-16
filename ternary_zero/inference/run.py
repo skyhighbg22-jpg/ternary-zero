@@ -9,8 +9,8 @@ Usage:
     python -m ternary_zero.inference.run <model_path> [options]
 
 Examples:
-    python -m ternary_zero.inference.run ./models/llama-3.2-1b "Hello, world"
-    python -m ternary_zero.inference.run meta-llama/Llama-3.2-1B --chat
+    python -m ternary_zero.inference.run ./models/llama-3.2-3b "Hello, world"
+    python -m ternary_zero.inference.run meta-llama/Llama-3.2-3B --chat
     python -m ternary_zero.inference.run ./models/llama-3-8b --benchmark
 """
 
@@ -26,16 +26,16 @@ def main():
         epilog="""
 Examples:
   Generate text:
-    python -m ternary_zero.inference.run ./models/llama-3.2-1b "The meaning of life is"
+    python -m ternary_zero.inference.run ./models/llama-3.2-3b "The meaning of life is"
 
   Interactive chat:
-    python -m ternary_zero.inference.run ./models/llama-3.2-1b --chat
+    python -m ternary_zero.inference.run ./models/llama-3.2-3b --chat
 
   Benchmark performance:
-    python -m ternary_zero.inference.run ./models/llama-3.2-1b --benchmark
+    python -m ternary_zero.inference.run ./models/llama-3.2-3b --benchmark
 
   Stream output:
-    python -m ternary_zero.inference.run ./models/llama-3.2-1b "Write a poem" --stream
+    python -m ternary_zero.inference.run ./models/llama-3.2-3b "Write a poem" --stream
         """,
     )
 

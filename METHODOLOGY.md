@@ -281,8 +281,8 @@ and bandwidth metrics.
 
 The $N$ values cover the full spectrum of transformer hidden dimensions:
 - **256–512:** Small/embedding layers
-- **1024–2048:** GPT-2 Small/Medium, Llama-3.2-1B attention dimensions
-- **4096–8192:** Llama-2-7B, Llama-3-8B, Llama-3.2-1B FFN intermediate
+- **1024–2048:** GPT-2 Small/Medium
+- **3072–8192:** Llama-3.2-3B, Llama-2-7B, Llama-3-8B
 - **11008:** Llama-2-7B FFN intermediate size
 - **14336:** Llama-3-8B FFN intermediate size
 - **16384–19456:** Large model FFN intermediates

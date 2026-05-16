@@ -88,7 +88,7 @@ Complete LLM inference pipeline with HuggingFace model loading, on-the-fly terna
 from ternary_zero.inference import InferenceEngine
 
 engine = InferenceEngine.from_pretrained(
-    "./models/llama-3.2-1b",
+    "./models/llama-3.2-3b",
     alpha=0.5,              # ternary quantization threshold
     max_seq_len=2048,
 )
@@ -110,7 +110,7 @@ Streaming weight-conversion utility that iterates through HuggingFace safetensor
 from ternary_zero.inference import ModelPatcher
 
 patcher = ModelPatcher(alpha=0.5, chunk_rows=256)
-manifest = patcher.patch_model("./models/llama-3.2-1b", "./output/ternary")
+manifest = patcher.patch_model("./models/llama-3.2-3b", "./output/ternary")
 # manifest.total_compression → 8.0x
 ```
 
@@ -155,7 +155,7 @@ Autograd engine with STE support, `nn` module system (Linear, BitLinear, Conv1d,
 
 | Model | Params | Ternary Weights | KV-Cache (S=2K) | Total VRAM | RTX 4060 (8GB) |
 |-------|--------|----------------|-----------------|------------|-----------------|
-| Llama-3.2-1B | 1.5B | 357 MB | 40 MB | ~700 MB | **Full VRAM** |
+| Llama-3.2-3B | 3.2B | 766 MB | 112 MB | ~1,200 MB | **Full VRAM** |
 | Llama-2-7B | 6.7B | 1,607 MB | 320 MB | ~2,200 MB | **Full VRAM** |
 | Llama-3-8B | 8.0B | 1,914 MB | 160 MB | ~2,400 MB | **Full VRAM** |
 | 13B | 13.0B | 3,250 MB | 400 MB | ~4,000 MB | **Full VRAM** |
@@ -227,7 +227,7 @@ pip install -e . --no-build-isolation
 from ternary_zero.inference import InferenceEngine
 
 engine = InferenceEngine.from_pretrained(
-    "./models/llama-3.2-1b",
+    "./models/llama-3.2-3b",
     alpha=0.5,
     max_seq_len=2048,
 )
@@ -255,10 +255,10 @@ engine.benchmark()
 ### CLI Runner
 
 ```bash
-python -m ternary_zero.inference.run ./models/llama-3.2-1b "Hello, world"
-python -m ternary_zero.inference.run ./models/llama-3.2-1b "Write a poem" --stream
-python -m ternary_zero.inference.run ./models/llama-3.2-1b --chat
-python -m ternary_zero.inference.run ./models/llama-3.2-1b --benchmark
+python -m ternary_zero.inference.run ./models/llama-3.2-3b "Hello, world"
+python -m ternary_zero.inference.run ./models/llama-3.2-3b "Write a poem" --stream
+python -m ternary_zero.inference.run ./models/llama-3.2-3b --chat
+python -m ternary_zero.inference.run ./models/llama-3.2-3b --benchmark
 ```
 
 ### BitLinear Training
@@ -302,10 +302,10 @@ for epoch in range(10):
 python benchmarks/shape_matrix_benchmark.py --warmup 50 --iterations 1000
 
 # 2. VRAM footprint + latency verification
-python benchmarks/undeniable_benchmark.py --model llama-3.2-1b
+python benchmarks/undeniable_benchmark.py --model llama-3.2-3b
 
 # 3. Double-buffered streaming benchmark
-python -m ternary_zero.inference.streaming_engine --model llama-3.2-1b --tokens 1
+python -m ternary_zero.inference.streaming_engine --model llama-3.2-3b --tokens 1
 
 # 4. microGPT implementation comparison (6-way)
 python benchmarks/run_benchmarks.py --train-steps 20 --inference-samples 5
@@ -316,7 +316,7 @@ cargo bench --bench gemv_bench
 # 6. Nsight Compute profiling
 ncu --set full --kernel-name "ternary_zero_gemv_kernel" \
     --launch-skip 100 --launch-count 10 \
-    python benchmarks/undeniable_benchmark.py --model llama-3.2-1b
+    python benchmarks/undeniable_benchmark.py --model llama-3.2-3b
 ```
 
 ### Measured Results (2026-05-09)
@@ -338,7 +338,7 @@ Weight memory: FP32 = 16,768 bytes; BitLinear = 1,060 bytes (16x compression).
 
 | Model | Total Params | FP16 Weight Mem | Ternary Weight Mem | Compression |
 |---|---|---|---|---|
-| Llama-3.2-1B | 1,498,482,688 | 2,858 MB | 357 MB | **8.0x** |
+| Llama-3.2-3B | 3,212,739,072 | 6,128 MB | 766 MB | **8.0x** |
 | Llama-2-7B | 6,738,415,616 | 12,853 MB | 1,607 MB | **8.0x** |
 | Llama-3-8B | 8,030,261,248 | 15,316 MB | 1,914 MB | **8.0x** |
 
@@ -360,7 +360,7 @@ Weight memory: FP32 = 16,768 bytes; BitLinear = 1,060 bytes (16x compression).
 - microGPT benchmark suite (6-way comparison)
 
 **In progress (see [ROADMAP.md](ROADMAP.md)):**
-- HuggingFace model patcher validation on Llama-3.2-1B
+- HuggingFace model patcher validation on Llama-3.2-3B
 - Automated 80-point shape matrix benchmark execution
 - Per-layer PCIe streaming validation on 70B models
 - Deep optimization: `cp.async`, PTX SIMD bitwise, KV-cache quantization

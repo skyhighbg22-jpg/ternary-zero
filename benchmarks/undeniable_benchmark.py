@@ -2,7 +2,7 @@
 """
 Ternary-Zero "Undeniable" Benchmark
 ====================================
-Verifies the VRAM footprint of Llama-3.2-1B using Ternary-Zero vs FP16
+Verifies the VRAM footprint of Llama-3.2-3B using Ternary-Zero vs FP16
 and measures GEMV latency per operation to prove:
 
   1. >=6x reduction in weight memory (target: 8x for pure W2 vs W16)
@@ -12,7 +12,7 @@ Uses the Ternary-Zero Python/Rust bindings for actual kernel measurement.
 
 Usage:
   python benchmarks/undeniable_benchmark.py
-  python benchmarks/undeniable_benchmark.py --model llama-3.2-1b
+  python benchmarks/undeniable_benchmark.py --model llama-3.2-3b
   python benchmarks/undeniable_benchmark.py --quick
 """
 
@@ -55,13 +55,13 @@ class LlamaArchitecture:
 
 
 LLAMA_ARCHITECTURES = {
-    "llama-3.2-1b": LlamaArchitecture(
-        name="Llama-3.2-1B",
-        hidden_size=2048,
+    "llama-3.2-3b": LlamaArchitecture(
+        name="Llama-3.2-3B",
+        hidden_size=3072,
         intermediate_size=8192,
-        num_layers=16,
+        num_layers=28,
         vocab_size=128256,
-        num_attention_heads=32,
+        num_attention_heads=24,
         num_key_value_heads=8,
     ),
     "llama-2-7b": LlamaArchitecture(
@@ -352,7 +352,7 @@ def print_section(title: str):
 # Main Benchmark
 # =====================================================================
 
-def run_benchmark(model_name: str = "llama-3.2-1b", quick: bool = False):
+def run_benchmark(model_name: str = "llama-3.2-3b", quick: bool = False):
     arch = LLAMA_ARCHITECTURES.get(model_name)
     if arch is None:
         print(f"Unknown model: {model_name}")
@@ -452,8 +452,8 @@ def run_benchmark(model_name: str = "llama-3.2-1b", quick: bool = False):
     print_section("4. M=1 GEMV LATENCY (RTX 4060 Roofline)")
 
     gemv_shapes = [
-        (1, 2048, "Llama-1B hidden"),
-        (1, 8192, "Llama-1B FFN up/down"),
+        (1, 3072, "Llama-3B hidden"),
+        (1, 8192, "Llama-3B FFN up/down"),
         (1, 4096, "Llama-7B hidden"),
         (1, 11008, "Llama-7B FFN up/down"),
     ]
@@ -492,8 +492,8 @@ def run_benchmark(model_name: str = "llama-3.2-1b", quick: bool = False):
         print()
 
         bench_shapes = [
-            (1, 2048, "Llama-1B hidden"),
-            (1, 8192, "Llama-1B FFN"),
+            (1, 3072, "Llama-3B hidden"),
+            (1, 8192, "Llama-3B FFN"),
             (1, 4096, "Llama-7B hidden"),
             (1, 11008, "Llama-7B FFN"),
         ]
@@ -539,7 +539,7 @@ def run_benchmark(model_name: str = "llama-3.2-1b", quick: bool = False):
     print_section("6. THE UNDENIABLE SUMMARY")
 
     l2_fit = "YES" if 11008 * 256 * 4 <= 32 * 1024 * 1024 else "NO"
-    low_est = estimate_gemv_latency("", 1, 2048, 0.25).projected_latency_us
+    low_est = estimate_gemv_latency("", 1, 3072, 0.25).projected_latency_us
     high_est = estimate_gemv_latency("", 1, 11008, 0.25).projected_latency_us
 
     print(f"""
@@ -557,7 +557,7 @@ def run_benchmark(model_name: str = "llama-3.2-1b", quick: bool = False):
 
   MEMORY EFFICIENCY:
     Bytes per parameter:    {ternary_fp.bytes_per_param} (2-bit ternary)
-    L2 cache fit (7B FFN):  {l2_fit} (10.75 MB < 32 MB L2)
+    L2 cache fit (3B FFN):  {l2_fit} (10.75 MB < 32 MB L2)
     Bandwidth utilization:  ~{0.25 * 8 / 2:.0f}% of FP16 BW needed per GEMV
 
   CONCLUSION:
@@ -607,7 +607,7 @@ def run_benchmark(model_name: str = "llama-3.2-1b", quick: bool = False):
 def main():
     parser = argparse.ArgumentParser(description="Ternary-Zero Undeniable Benchmark")
     parser.add_argument(
-        "--model", default="llama-3.2-1b",
+        "--model", default="llama-3.2-3b",
         choices=list(LLAMA_ARCHITECTURES.keys()),
         help="Model architecture to benchmark",
     )

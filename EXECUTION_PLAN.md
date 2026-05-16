@@ -1016,8 +1016,8 @@ The project requires three critical engineering components to transition from a 
 
 | Metric | Target | Measurement |
 |---|---|---|
-| Model patcher: Llama-3.2-1B conversion | Complete without OOM | `patch_manifest.json` generated |
-| Model patcher: Peak host RAM | < 4 GB during 1B model conversion | `tracemalloc` |
+| Model patcher: Llama-3.2-3B conversion | Complete without OOM | `patch_manifest.json` generated |
+| Model patcher: Peak host RAM | < 4 GB during 3B model conversion | `tracemalloc` |
 | Shape matrix: Configuration coverage | 80/80 data points | `manifest.successful_configs == 80` |
 | Shape matrix: Execution time | < 10 minutes for full sweep | `manifest.total_time_s` |
 | Streaming: Layer descriptor correctness | All Llama projections generated | `build_llama_streaming_engine()` test |

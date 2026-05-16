@@ -845,16 +845,16 @@ For a single transformer layer with the following projections:
 
 | Projection | Shape | Ternary Bytes | L2 % |
 |-----------|-------|--------------|------|
-| Q | [2048, 2048] | 0.25 MB | 0.8% |
-| K | [512, 2048] | 0.06 MB | 0.2% |
-| V | [512, 2048] | 0.06 MB | 0.2% |
-| O | [2048, 2048] | 0.25 MB | 0.8% |
-| Gate | [8192, 2048] | 1.00 MB | 3.1% |
-| Up | [8192, 2048] | 1.00 MB | 3.1% |
-| Down | [2048, 8192] | 1.00 MB | 3.1% |
-| **Total** | | **3.62 MB** | **11.3%** |
+| Q | [3072, 3072] | 2.25 MB | 7.0% |
+| K | [1024, 3072] | 0.75 MB | 2.3% |
+| V | [1024, 3072] | 0.75 MB | 2.3% |
+| O | [3072, 3072] | 2.25 MB | 7.0% |
+| Gate | [8192, 3072] | 6.00 MB | 18.8% |
+| Up | [8192, 3072] | 6.00 MB | 18.8% |
+| Down | [3072, 8192] | 6.00 MB | 18.8% |
+| **Total** | | **24.00 MB** | **75.0%** |
 
-For Llama-3.2-1B, a single layer's weights (3.62 MB) fit comfortably in the 32 MB L2 cache with 88.7% headroom. This allows **all 7 projections** to be pinned simultaneously.
+For Llama-3.2-3B, a single layer's weights (24.00 MB) fit in the 32 MB L2 cache with 25% headroom. All 7 projections can still be pinned simultaneously, though with less room for activation tile reuse.
 
 For larger models (Llama-2-7B FFN: 10.75 MB per projection), two projections combined (21.5 MB) still fit with 33% headroom. The implementation must select which projections to pin based on their access frequency during a single token decode.
 

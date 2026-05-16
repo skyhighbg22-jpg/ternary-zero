@@ -380,7 +380,7 @@ class DoubleBufferedStreamingEngine:
 # =====================================================================
 
 def build_llama_streaming_engine(
-    model_name: str = "llama-3.2-1b",
+    model_name: str = "llama-3.2-3b",
     weight_dir: str = "",
     force_cpu: bool = False,
     prefetch_depth: int = 2,
@@ -436,7 +436,7 @@ def build_llama_streaming_engine(
 # =====================================================================
 
 def benchmark_streaming(
-    model_name: str = "llama-3.2-1b",
+    model_name: str = "llama-3.2-3b",
     weight_dir: str = "",
     num_tokens: int = 1,
     force_cpu: bool = True,
@@ -514,7 +514,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="Ternary-Zero double-buffered PCIe streaming benchmark"
     )
-    parser.add_argument("--model", default="llama-3.2-1b", help="Model name")
+    parser.add_argument("--model", default="llama-3.2-3b", help="Model name")
     parser.add_argument("--weight-dir", default="", help="Path to quantized weights")
     parser.add_argument("--tokens", type=int, default=1, help="Number of tokens to generate")
     parser.add_argument("--cpu", action="store_true", help="Force CPU execution")

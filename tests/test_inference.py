@@ -26,14 +26,14 @@ import numpy as np
 
 
 def test_config():
-    from ternary_zero.inference.config import ModelConfig, LLAMA_32_1B, detect_config
+    from ternary_zero.inference.config import ModelConfig, LLAMA_32_3B, detect_config
 
-    cfg = LLAMA_32_1B
-    assert cfg.hidden_size == 2048
-    assert cfg.num_layers == 16
-    assert cfg.head_dim == 64
+    cfg = LLAMA_32_3B
+    assert cfg.hidden_size == 3072
+    assert cfg.num_layers == 28
+    assert cfg.head_dim == 128
     assert cfg.num_kv_heads == 8
-    assert cfg.num_queries_per_kv == 4
+    assert cfg.num_queries_per_kv == 3
     assert cfg.total_params > 0
     assert cfg.weight_bytes_ternary() > 0
     print(f"  [PASS] Config: {cfg.name} ({cfg.total_params:,} params)")
@@ -87,18 +87,18 @@ def test_sampler():
 
 def test_kv_cache():
     from ternary_zero.inference.cache import KVCache
-    from ternary_zero.inference.config import LLAMA_32_1B
+    from ternary_zero.inference.config import LLAMA_32_3B
 
-    cache = KVCache(LLAMA_32_1B, max_seq_len=128)
-    assert cache.k_cache.shape == (16, 8, 128, 64)
-    assert cache.v_cache.shape == (16, 8, 128, 64)
+    cache = KVCache(LLAMA_32_3B, max_seq_len=128)
+    assert cache.k_cache.shape == (28, 8, 128, 128)
+    assert cache.v_cache.shape == (28, 8, 128, 128)
 
-    k = np.random.randn(8, 64).astype(np.float32)
-    v = np.random.randn(8, 64).astype(np.float32)
+    k = np.random.randn(8, 128).astype(np.float32)
+    v = np.random.randn(8, 128).astype(np.float32)
     cache.update(0, 0, k, v)
 
     k_out = cache.get_k(0, 0, 1)
-    assert k_out.shape == (1, 64)
+    assert k_out.shape == (1, 128)
     assert np.allclose(k_out[0], k[0])
 
     cache.reset()

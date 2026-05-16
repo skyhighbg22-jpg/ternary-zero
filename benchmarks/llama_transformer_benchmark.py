@@ -15,9 +15,9 @@ Measures:
   6. Per-layer GEMV latency profile
 
 Usage:
-  python benchmarks/llama_transformer_benchmark.py --model meta-llama/Llama-3.2-1B
+  python benchmarks/llama_transformer_benchmark.py --model meta-llama/Llama-3.2-3B
   python benchmarks/llama_transformer_benchmark.py --model meta-llama/Llama-2-7b --max-tokens 64
-  python benchmarks/llama_transformer_benchmark.py --preset llama-3.2-1b --quick
+  python benchmarks/llama_transformer_benchmark.py --preset llama-3.2-3b --quick
   python benchmarks/llama_transformer_benchmark.py --all-presets --output results/transformer_scale.json
 
 Requires:
@@ -800,7 +800,7 @@ def main():
     )
     parser.add_argument(
         "--preset", type=str, default=None,
-        help="Preset model name (e.g., llama-3.2-1b, llama-2-7b)",
+        help="Preset model name (e.g., llama-3.2-3b, llama-2-7b)",
     )
     parser.add_argument(
         "--all-presets", action="store_true",
@@ -826,7 +826,7 @@ def main():
         )
         return 0
 
-    model_path = args.model or args.preset or "llama-3.2-1b"
+    model_path = args.model or args.preset or "llama-3.2-3b"
     run_full_benchmark(
         model_path=model_path,
         preset_name=args.preset,

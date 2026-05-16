@@ -1,4 +1,4 @@
-from .config import ModelConfig, LLAMA_32_1B, LLAMA_3_8B, LLAMA_2_7B, LLAMA_2_13B, LLAMA_370B
+from .config import ModelConfig, LLAMA_32_3B, LLAMA_3_8B, LLAMA_2_7B, LLAMA_2_13B, LLAMA_370B
 from .engine import InferenceEngine
 from .model_patcher import ModelPatcher, PatchManifest, SafetensorsReader
 from .streaming_engine import (
@@ -13,7 +13,7 @@ from .streaming_engine import (
 __all__ = [
     "ModelConfig",
     "InferenceEngine",
-    "LLAMA_32_1B",
+    "LLAMA_32_3B",
     "LLAMA_3_8B",
     "LLAMA_2_7B",
     "LLAMA_2_13B",

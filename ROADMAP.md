@@ -20,7 +20,7 @@ The Version 1.0 release targets three critical engineering milestones that trans
 
 ### 2.1 Objective
 
-Implement a memory-efficient weight-conversion utility that iterates through standard HuggingFace transformer architectures (e.g., Llama-3.2-1B) and performs on-the-fly 16-bit to packed 2-bit ternary conversion. The patcher must use a **streaming or chunked loading strategy** to prevent Out-of-Memory (OOM) errors on the host system during the conversion of large-scale models.
+Implement a memory-efficient weight-conversion utility that iterates through standard HuggingFace transformer architectures (e.g., Llama-3.2-3B) and performs on-the-fly 16-bit to packed 2-bit ternary conversion. The patcher must use a **streaming or chunked loading strategy** to prevent Out-of-Memory (OOM) errors on the host system during the conversion of large-scale models.
 
 ### 2.2 Technical Specification
 
@@ -111,12 +111,12 @@ Each `.npz` contains:
 
 | Criterion | Target | Validation |
 |-----------|--------|------------|
-| Llama-3.2-1B conversion | Complete without OOM | `manifest.json` generated with all layers |
+| Llama-3.2-3B conversion | Complete without OOM | `manifest.json` generated with all layers |
 | Peak host RAM during conversion | < 4 GB | `tracemalloc` or `/proc/[pid]/status` |
 | Compression ratio | 8.0x vs FP16 | `manifest.total_compression` |
 | Round-trip correctness | Unpacked weights == original ternary | `assert np.array_equal(pack(unpack(w)), w)` |
 | Native packer delegation | Uses `_core.pack_ternary_to_u32_py` when available | Import check in manifest |
-| Conversion time (1B model) | < 60 seconds | Wall clock in manifest |
+| Conversion time (3B model) | < 60 seconds | Wall clock in manifest |
 
 ### 2.4 Implementation Status
 
@@ -143,8 +143,8 @@ $$|\mathcal{M}| \times |\mathcal{N}| = 8 \times 10 = 80 \text{ configurations}$$
 
 The $N$ values cover the full spectrum of transformer hidden dimensions:
 - **256–512:** Small/embedding layers
-- **1024–2048:** GPT-2 Small/Medium, Llama-3.2-1B attention
-- **4096–8192:** Llama-2-7B, Llama-3-8B, Llama-3.2-1B FFN
+- **1024–2048:** GPT-2 Small/Medium
+- **3072–8192:** Llama-3.2-3B, Llama-2-7B, Llama-3-8B
 - **11008:** Llama-2-7B FFN intermediate
 - **14336:** Llama-3-8B FFN intermediate
 - **16384–19456:** Large model FFN intermediates

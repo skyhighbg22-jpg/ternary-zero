@@ -398,9 +398,9 @@ int main() {
     printf("  L2 utilization: %.1f%%\n", (float)combined / (32.0f * 1024.0f * 1024.0f) * 100.0f);
     printf("  Fits in L2: %s\n\n", combined <= 32 * 1024 * 1024 ? "YES" : "NO");
 
-    // Llama-3.2-1B FFN
-    l2_print_analysis(8192, 2048, "Llama-1B gate_proj (8192x2048)");
-    l2_print_analysis(2048, 8192, "Llama-1B down_proj (2048x8192)");
+    // Llama-3.2-3B FFN
+    l2_print_analysis(8192, 3072, "Llama-3B gate_proj (8192x3072)");
+    l2_print_analysis(3072, 8192, "Llama-3B down_proj (3072x8192)");
 
     // Llama-3-8B FFN
     l2_print_analysis(14336, 4096, "Llama-8B gate_proj (14336x4096)");

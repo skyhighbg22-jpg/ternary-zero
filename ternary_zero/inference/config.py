@@ -81,12 +81,12 @@ class WeightMapping:
 
 LLAMA_WEIGHT_MAP = WeightMapping()
 
-LLAMA_32_1B = ModelConfig(
-    name="Llama-3.2-1B",
-    hidden_size=2048,
+LLAMA_32_3B = ModelConfig(
+    name="Llama-3.2-3B",
+    hidden_size=3072,
     intermediate_size=8192,
-    num_layers=16,
-    num_attention_heads=32,
+    num_layers=28,
+    num_attention_heads=24,
     num_key_value_heads=8,
     vocab_size=128256,
     max_position_embeddings=131072,
@@ -157,7 +157,7 @@ LLAMA_370B = ModelConfig(
 )
 
 PRESET_CONFIGS: Dict[str, ModelConfig] = {
-    "llama-3.2-1b": LLAMA_32_1B,
+    "llama-3.2-3b": LLAMA_32_3B,
     "llama-3-8b": LLAMA_3_8B,
     "llama-2-7b": LLAMA_2_7B,
     "llama-2-13b": LLAMA_2_13B,
