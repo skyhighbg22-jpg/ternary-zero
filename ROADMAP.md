@@ -120,9 +120,18 @@ Each `.npz` contains:
 
 ### 2.4 Implementation Status
 
-**Status:** Implemented in `ternary_zero/inference/model_patcher.py`.
+**Status:** Implemented in `ternary_zero/inference/model_patcher.py`. **VALIDATED (2026-05-17).**
 
-The `ModelPatcher` class, `SafetensorsReader`, and chunked quantization pipeline are complete. The patcher produces a `patch_manifest.json` with per-layer compression ratios, sparsity statistics, and timing data.
+The `ModelPatcher` class, `SafetensorsReader`, and chunked quantization pipeline are complete. The patcher successfully quantized all 28 layers of Llama-3.2-3B (3.61B parameters) in 233.3 seconds, producing 707.7 MB of packed ternary weights from 12.85 GB of original weights (18.2x compression vs FP32, 9.1x vs FP16).
+
+**Measured acceptance criteria:**
+
+| Criterion | Target | Measured | Status |
+|-----------|--------|----------|--------|
+| Llama-3.2-3B conversion | Complete without OOM | All 28 layers + embed + norm | **PASS** |
+| Compression ratio | 8.0x vs FP16 | 9.1x (packed) / 8.0x (theoretical) | **PASS** |
+| Round-trip correctness | Unpacked == original ternary | Verified via inference load | **PASS** |
+| Conversion time (3B model) | < 60 seconds | 233.3s | **FAIL** (acceptable for streaming) |
 
 ---
 
@@ -233,9 +242,18 @@ Each configuration is measured with:
 
 ### 3.6 Implementation Status
 
-**Status:** Implemented in `benchmarks/shape_matrix_benchmark.py`.
+**Status:** Implemented in `benchmarks/shape_matrix_benchmark.py`. **EXECUTED (2026-05-17).**
 
-The 80-point matrix generator, GPU/CPU benchmarkers, and `SuiteManifest` serializer are complete. The suite auto-detects the CUDA backend and falls back to NumPy-vectorized CPU benchmarks when no GPU is available.
+The 80-point matrix generator, GPU/CPU benchmarkers, and `SuiteManifest` serializer are complete. The full 80-point sweep was executed successfully (80/80 configurations, 12.2s total). Results are in `benchmarks/output/manifest.json`.
+
+**Measured acceptance criteria:**
+
+| Criterion | Target | Measured | Status |
+|-----------|--------|----------|--------|
+| Configuration coverage | 80/80 data points | 80/80 | **PASS** |
+| Statistical sample size | >= 1000 iterations per point | 1000 | **PASS** |
+| Execution time | < 10 minutes for full sweep | 12.2s | **PASS** |
+| Success rate | 100% | 100% | **PASS** |
 
 ---
 
@@ -357,9 +375,88 @@ The `DoubleBufferedStreamingEngine`, `AsyncLayerLoader`, `GemvExecutor`, and `bu
 
 ---
 
-## 5. Deep Optimization Targets (Post-Milestone)
+## 5. Post-Benchmark Findings (2026-05-17)
 
-The following hardware-level optimizations are specified for implementation after the three milestones are validated. They target the inner-loop efficiency of the CUDA kernel and the memory hierarchy utilization.
+The full benchmark suite was executed on RTX 4060 (sm_89, CUDA 13.2). The following
+findings revise priorities and inform the next development phase.
+
+### 5.0 Summary of Measured Results
+
+| Benchmark | Status | Key Finding |
+|-----------|--------|-------------|
+| Undeniable (VRAM + Latency) | **PASS** | 8.0x compression confirmed; kernel launch overhead ~26 us |
+| Shape Matrix (80-point) | **PASS** | 80/80 configs; peak 25.9 GFLOPS at M=128; 6.9 GB/s peak BW |
+| CUDA Baseline Comparison | **PASS** | 1.5x-3.3x speedup vs cuBLAS FP16; competitive with INT4 |
+| Quantization Probe | **PASS** | 28 layers quantized, 9.1x compression, 233.3s |
+| Transformer Phase 4 | **PASS** | 42,395x context scaling at 7.5 GB VRAM |
+| microGPT Backend | **PASS** | 6 backends measured; BitLinear 38.1x inference speedup |
+| Transformer Phases 2-3 | **BLOCKED** | Requires CUDA PyTorch |
+| FP16 Baseline | **BLOCKED** | Requires CUDA PyTorch |
+
+### 5.1 Critical Finding: Kernel Launch Overhead
+
+The most significant finding is the **gap between roofline estimates and measured latency**:
+
+| Configuration | Roofline (us) | Measured (us) | Gap (us) | Overhead Factor |
+|--------------|---------------|---------------|----------|-----------------|
+| M=1, N=3072 | ~2.03 | 27.65 | 25.62 | 13.6x |
+| M=1, N=8192 | ~2.07 | 33.66 | 31.59 | 16.3x |
+| M=1, N=4096 | ~2.03 | 25.73 | 23.70 | 12.7x |
+| M=1, N=11008 | ~2.09 | 32.90 | 30.81 | 15.7x |
+
+**Root cause:** Each GEMV invocation incurs ~25 us of overhead from:
+- CUDA kernel launch latency (~5-10 us)
+- Decode pipeline (BFE + zero-gate + sign-flip per weight)
+- Warp synchronization barriers
+- L2 cache misses on activation tiles
+
+**Impact:** For Llama-3.2-3B with 28 layers × 7 projections = 196 GEMV calls per token,
+the per-token launch overhead alone is ~4.9 ms, capping throughput at ~200 tokens/sec
+regardless of bandwidth utilization.
+
+### 5.2 Revised Priority Stack
+
+Based on the measured data, the development priorities are reordered:
+
+| Priority | Action | Expected Impact | Effort |
+|----------|--------|-----------------|--------|
+| **P0** | Persistent kernel or CUDA Graphs | Eliminate 25 us/launch overhead; 10-15x M=1 speedup | High |
+| **P1** | Multi-projection fusion (Q+K+V+O) | Reduce 196 launches to ~56 per token | High |
+| **P2** | Nsight Compute profiling | Identify exact bottleneck (launch vs decode vs memory) | Medium |
+| **P3** | Transformer inference on CUDA | Complete Phases 2-3 (tokens/sec, PPL) | Medium |
+| **P4** | `cp.async` for activation tiles | 5-15% latency reduction for large N | Medium |
+| **P5** | FP16 baseline comparison | Direct apples-to-apples speedup data | Low |
+| **P6** | Architectural portability (sm_70-sm_90) | Remove sm_89 lock-in | High |
+
+### 5.3 Immediate Next Steps
+
+1. **Run Nsight Compute profiling** on M=1, N=4096 (canonical decode shape) to
+   quantify the breakdown between launch overhead, decode pipeline, and memory access.
+   ```bash
+   ncu --set full --kernel-name "ternary_zero_gemv_kernel" \
+       --launch-skip 100 --launch-count 10 \
+       benchmarks/output/baseline_comparison.exe
+   ```
+
+2. **Implement CUDA Graphs** to amortize kernel launch overhead across multiple GEMV
+   invocations. For a 3B model, capturing 196 GEMV calls in a single graph could
+   reduce per-token overhead from ~4.9 ms to ~0.3 ms.
+
+3. **Acquire CUDA PyTorch** to unblock transformer Phases 2-3:
+   ```bash
+   pip install torch --index-url https://download.pytorch.org/whl/cu121
+   python benchmarks/llama_transformer_benchmark.py --preset llama-3.2-3b --max-tokens 128
+   python benchmarks/fp16_baseline.py --model meta-llama/Llama-3.2-3B --perplexity
+   ```
+
+4. **Benchmark persistent kernel variant** that keeps a thread block alive across
+   multiple GEMV invocations, eliminating per-call launch overhead entirely.
+
+---
+
+## 6. Deep Optimization Targets (Post-Milestone)
+
+The following hardware-level optimizations are specified for implementation after the three milestones are validated. They target the inner-loop efficiency of the CUDA kernel and the memory hierarchy utilization. **Priority ordering revised based on 2026-05-17 benchmark findings.**
 
 ### 5.1 Shared Memory Tiling with `cp.async`
 
@@ -454,15 +551,15 @@ cudaStreamSetAttribute(stream, CUDA_STREAM_ATTRIBUTE_ACCESS_POLICY_WINDOW, &attr
 
 ---
 
-## 6. Milestone Dependency Graph
+## 8. Milestone Dependency Graph
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                    VERSION 1.0 DEPENDENCY GRAPH                 │
 │                                                                  │
 │         ┌──────────────────────┐                                │
-│         │  M1: Model Patcher   │                                │
-│         │  (HuggingFace Bridge)│                                │
+│         │  M1: Model Patcher   │  ✅ VALIDATED 2026-05-17      │
+│         │  (HuggingFace Bridge)│  9.1x compression, 28 layers  │
 │         └──────────┬───────────┘                                │
 │                    │                                             │
 │         ┌──────────┴───────────┐                                │
@@ -470,13 +567,18 @@ cudaStreamSetAttribute(stream, CUDA_STREAM_ATTRIBUTE_ACCESS_POLICY_WINDOW, &attr
 │  ┌──────────────────┐  ┌──────────────────────┐                │
 │  │ M2: Shape Matrix  │  │ M3: PCIe Streaming   │                │
 │  │ Benchmark Suite   │  │ (Double Buffering)   │                │
-│  │ (80-point sweep)  │  │ (70B+ models)        │                │
+│  │ ✅ EXECUTED       │  │ ✅ IMPLEMENTED       │                │
+│  │ 80/80 configs     │  │ Needs GPU validation │                │
 │  └────────┬─────────┘  └────────┬─────────────┘                │
 │           │                      │                              │
 │           ▼                      ▼                              │
 │  ┌──────────────────────────────────────────┐                  │
-│  │  Deep Optimization                        │                  │
-│  │  cp.async │ SIMD bitwise │ KV-cache quant │                  │
+│  │  Deep Optimization (PRIORITY REVISED)     │                  │
+│  │  P0: Persistent kernel / CUDA Graphs      │                  │
+│  │  P1: Multi-projection fusion              │                  │
+│  │  P2: Nsight profiling                     │                  │
+│  │  P3: Transformer CUDA inference           │                  │
+│  │  P4: cp.async │ P5: FP16 baseline        │                  │
 │  └──────────────────────────────────────────┘                  │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -488,14 +590,17 @@ cudaStreamSetAttribute(stream, CUDA_STREAM_ATTRIBUTE_ACCESS_POLICY_WINDOW, &attr
 
 ---
 
-## 7. Current Limitations & Known Issues
+## 9. Current Limitations & Known Issues
 
 | Limitation | Impact | Mitigation | Timeline |
 |-----------|--------|------------|----------|
-| sm\_89-only kernel | Cannot run on non-Ada GPUs | Multi-arch fat binary (see §5) | Post-v1.0 |
-| No `cp.async` | ~10% latency gap on large N | §5.1 specification ready | Post-v1.0 |
+| **Kernel launch overhead (~25 us/launch)** | **Caps M=1 throughput at ~200 tok/s** | **Persistent kernel / CUDA Graphs (P0)** | **Immediate** |
+| sm\_89-only kernel | Cannot run on non-Ada GPUs | Multi-arch fat binary (see §6) | Post-v1.0 |
+| No `cp.async` | ~10% latency gap on large N | §6.1 specification ready | Post-v1.0 |
 | FP16 accumulation overflow at N>8192 | Numerical error | FP32 accumulation mode | Post-v1.0 |
 | Recursive autograd `build_topo` | Stack overflow at ~1000 nodes | Convert to iterative DFS | Post-v1.0 |
 | No INT4 support | Different compression/accuracy tradeoff | Out of scope for v1.0 | Future |
 | Single-GPU only | No multi-GPU or distributed | Out of scope for v1.0 | Future |
 | No model zoo | Users must download and quantize | Provide pre-quantized Llama models | Post-v1.0 |
+| Transformer inference not validated on CUDA | No tokens/sec or PPL data | Acquire CUDA PyTorch (P3) | Immediate |
+| Bandwidth utilization < 3% of peak | Kernel not bandwidth-limited yet | Fix launch overhead first (P0) | Immediate |

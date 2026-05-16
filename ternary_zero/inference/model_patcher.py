@@ -115,6 +115,13 @@ class SafetensorsReader:
         dtype_str = dtype_map.get(info["dtype"], "float32")
         return info["shape"], dtype_str
 
+    @staticmethod
+    def _bf16_to_fp32(raw: bytes, shape: List[int]) -> np.ndarray:
+        # NumPy on this environment does not expose a native bfloat16 dtype.
+        raw_u16 = np.frombuffer(raw, dtype=np.uint16)
+        raw_u32 = raw_u16.astype(np.uint32) << np.uint32(16)
+        return raw_u32.view(np.float32).reshape(shape).copy()
+
     def read_tensor(self, name: str) -> np.ndarray:
         header = self._read_header()
         info = header[name]
@@ -123,13 +130,15 @@ class SafetensorsReader:
             "I64": np.int64, "I32": np.int32, "I16": np.int16, "I8": np.int8,
             "U8": np.uint8, "BOOL": np.bool_,
         }
-        np_dtype = dtype_map.get(info["dtype"], np.float32)
         begin, end = info["data_offsets"]
         with open(self.path, "rb") as f:
             header_size_bytes = f.read(8)
             header_size = int.from_bytes(header_size_bytes, "little")
             f.seek(8 + header_size + begin)
             raw = f.read(end - begin)
+        if info["dtype"] == "BF16":
+            return self._bf16_to_fp32(raw, info["shape"])
+        np_dtype = dtype_map.get(info["dtype"], np.float32)
         return np.frombuffer(raw, dtype=np_dtype).reshape(info["shape"]).copy()
 
     def stream_tensors(self) -> Iterator[Tuple[str, np.ndarray]]:
@@ -188,6 +197,7 @@ class LayerQuantStats:
 @dataclass
 class PatchManifest:
     model_name: str
+    source_model_path: str
     model_config: Dict[str, Any]
     output_dir: str
     total_original_bytes: int = 0
@@ -206,6 +216,7 @@ class PatchManifest:
     def to_dict(self) -> dict:
         return {
             "model_name": self.model_name,
+            "source_model_path": self.source_model_path,
             "model_config": self.model_config,
             "output_dir": self.output_dir,
             "total_original_bytes": self.total_original_bytes,
@@ -353,6 +364,7 @@ class ModelPatcher:
 
         manifest = PatchManifest(
             model_name=config.name,
+            source_model_path=model_path,
             model_config={
                 "hidden_size": config.hidden_size,
                 "intermediate_size": config.intermediate_size,
@@ -381,12 +393,21 @@ class ModelPatcher:
 
             if self._is_embedding(name, wm):
                 if self.embed_fp16:
-                    embed_fp32 = tensor.astype(np.float32)
+                    embed_weight = tensor.astype(np.float16)
                     out_path = os.path.join(output_dir, "embed_tokens.npz")
-                    np.savez_compressed(out_path, weight=embed_fp32)
-                    manifest.embed_bytes = embed_fp32.nbytes
+                    np.savez(out_path, weight=embed_weight)
+                    manifest.embed_bytes = embed_weight.nbytes
                     if self.verbose:
-                        print(f"  {name}: {tensor.shape} -> FP32 ({embed_fp32.nbytes / 1e6:.1f} MB)")
+                        print(f"  {name}: {tensor.shape} -> FP16 ({embed_weight.nbytes / 1e6:.1f} MB)")
+                    del embed_weight
+                else:
+                    embed_weight = tensor.astype(np.float32)
+                    out_path = os.path.join(output_dir, "embed_tokens.npz")
+                    np.savez(out_path, weight=embed_weight)
+                    manifest.embed_bytes = embed_weight.nbytes
+                    if self.verbose:
+                        print(f"  {name}: {tensor.shape} -> FP32 ({embed_weight.nbytes / 1e6:.1f} MB)")
+                    del embed_weight
                 del tensor
                 gc.collect()
                 continue
@@ -405,6 +426,7 @@ class ModelPatcher:
 
             if self._is_quantizable(name, wm):
                 t0 = time.perf_counter()
+                original_dtype = str(tensor.dtype) if hasattr(tensor, "dtype") else "float32"
                 weight_f32 = tensor.astype(np.float32)
                 del tensor
 
@@ -427,7 +449,7 @@ class ModelPatcher:
                 stats = LayerQuantStats(
                     name=name,
                     original_shape=[m, n],
-                    original_dtype=str(tensor.dtype) if hasattr(tensor, 'dtype') else "float32",
+                    original_dtype=original_dtype,
                     original_bytes=original_bytes,
                     packed_bytes=packed_bytes,
                     compression_ratio=original_bytes / packed_bytes if packed_bytes > 0 else 0.0,

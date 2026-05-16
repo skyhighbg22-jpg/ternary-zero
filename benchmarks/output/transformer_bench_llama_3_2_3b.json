@@ -1,0 +1,20 @@
+{
+  "timestamp": "2026-05-17T00:43:50+0530",
+  "platform": "Windows 11 (AMD64)",
+  "gpu_name": "NVIDIA GeForce RTX 4060 Laptop GPU",
+  "cuda_version": "13.2, V13.2.78",
+  "python_version": "3.13.2",
+  "numpy_version": "2.4.5",
+  "errors": [
+    "Quantization failed: cannot reshape array of size 197001216 into shape (128256,3072)",
+    "Inference failed: data type 'bfloat16' not understood",
+    "Perplexity eval failed: data type 'bfloat16' not understood"
+  ],
+  "context_scaling": {
+    "model_name": "Llama-3.2-3B",
+    "max_context_ternary": 42395,
+    "max_context_fp16": 1,
+    "scaling_ratio": 42395.0,
+    "vram_budget_mb": 7500.0
+  }
+}

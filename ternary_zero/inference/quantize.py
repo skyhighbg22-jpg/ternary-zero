@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
+import json
 from typing import Dict, Optional, Tuple, List
 from pathlib import Path
 
@@ -127,10 +128,11 @@ class QuantizedModel:
 
         embed_w = state_dict.get(wm.embed_tokens)
         if embed_w is not None:
-            self.embed_tokens = embed_w.astype(np.float32) if embed_fp16 else embed_w
+            self.embed_tokens = embed_w.astype(np.float16) if embed_fp16 else embed_w.astype(np.float32)
             if verbose:
                 mb = self.embed_tokens.nbytes / (1024 * 1024)
-                print(f"  Embedding: {embed_w.shape} -> FP32 ({mb:.1f} MB)")
+                precision = "FP16" if embed_fp16 else "FP32"
+                print(f"  Embedding: {embed_w.shape} -> {precision} ({mb:.1f} MB)")
 
         lm_w = state_dict.get(wm.lm_head)
         if lm_w is not None:
@@ -186,11 +188,15 @@ class QuantizedModel:
 
 def load_safetensors(path: str) -> Dict[str, np.ndarray]:
     try:
-        from safetensors import safe_open
+        import torch
+        from safetensors.torch import load_file
         tensors = {}
-        with safe_open(path, framework="numpy") as f:
-            for key in f.keys():
-                tensors[key] = f.get_tensor(key)
+        state = load_file(path)
+        for key, tensor in state.items():
+            if tensor.dtype == torch.bfloat16:
+                tensors[key] = tensor.to(torch.float32).cpu().numpy()
+            else:
+                tensors[key] = tensor.cpu().numpy()
         return tensors
     except ImportError:
         pass
@@ -203,12 +209,96 @@ def load_safetensors(path: str) -> Dict[str, np.ndarray]:
             state = load_file(path)
         else:
             state = torch.load(path, map_location="cpu", weights_only=True)
-        return {k: v.cpu().numpy() for k, v in state.items()}
+        tensors = {}
+        for k, v in state.items():
+            if v.dtype == torch.bfloat16:
+                tensors[k] = v.to(torch.float32).cpu().numpy()
+            else:
+                tensors[k] = v.cpu().numpy()
+        return tensors
     except ImportError:
         raise ImportError(
             "Install 'safetensors' or 'torch' to load model weights: "
             "pip install safetensors torch"
         )
+
+
+def load_quantized_model_dir(
+    model_path: str,
+    config: ModelConfig,
+    weight_map: Optional[WeightMapping] = None,
+    verbose: bool = True,
+) -> QuantizedModel:
+    p = Path(model_path)
+    manifest_path = p / "patch_manifest.json"
+    if not manifest_path.exists():
+        raise FileNotFoundError(f"No patch_manifest.json found at {manifest_path}")
+
+    wm = weight_map or LLAMA_WEIGHT_MAP
+    qm = QuantizedModel(config)
+
+    with open(manifest_path, "r", encoding="utf-8") as f:
+        manifest = json.load(f)
+
+    embed_path = p / "embed_tokens.npz"
+    if embed_path.exists():
+        qm.embed_tokens = np.load(embed_path)["weight"].astype(np.float32)
+
+    final_norm_path = p / f"{wm.final_norm.replace('.', '_')}.npz"
+    if final_norm_path.exists():
+        qm.norm_weight = np.load(final_norm_path)["weight"].astype(np.float32)
+
+    lm_head_path = p / f"{wm.lm_head.replace('.', '_')}.npz"
+    if lm_head_path.exists():
+        data = np.load(lm_head_path)
+        if "packed_weights" in data:
+            qm.lm_head = QuantizedLayer(
+                packed_weights=data["packed_weights"].astype(np.uint32),
+                per_row_scale=data["per_row_scale"].astype(np.float32),
+                global_scale=float(data["global_scale"]),
+                m=int(data["m"]),
+                n=int(data["n"]),
+                bias=data["bias"].astype(np.float32) if "bias" in data else None,
+            )
+        elif "weight" in data:
+            qm._lm_head_fp32 = data["weight"].astype(np.float32)
+
+    for layer_idx in range(config.num_layers):
+        prefix = f"{wm.layer_prefix}.{layer_idx}"
+        layer_data = {}
+
+        for norm_key, field_name in [
+            (f"{prefix}.{wm.input_norm}", "input_norm"),
+            (f"{prefix}.{wm.post_attn_norm}", "post_attn_norm"),
+        ]:
+            norm_path = p / f"{norm_key.replace('.', '_')}.npz"
+            if norm_path.exists():
+                layer_data[field_name] = np.load(norm_path)["weight"].astype(np.float32)
+
+        for proj_name in ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]:
+            tensor_key = f"{prefix}.{getattr(wm, proj_name)}"
+            tensor_path = p / f"{tensor_key.replace('.', '_')}.npz"
+            if not tensor_path.exists():
+                continue
+
+            data = np.load(tensor_path)
+            layer_data[proj_name] = QuantizedLayer(
+                packed_weights=data["packed_weights"].astype(np.uint32),
+                per_row_scale=data["per_row_scale"].astype(np.float32),
+                global_scale=float(data["global_scale"]),
+                m=int(data["m"]),
+                n=int(data["n"]),
+                bias=data["bias"].astype(np.float32) if "bias" in data else None,
+            )
+
+        qm.layers.append(layer_data)
+
+    if verbose:
+        print(f"Loading quantized cache from: {p}")
+        print(f"  Manifest model: {manifest.get('model_name', config.name)}")
+        print(f"  Layers loaded:  {len(qm.layers)}")
+
+    return qm
 
 
 def load_model_weights(
@@ -222,6 +312,14 @@ def load_model_weights(
 ) -> QuantizedModel:
     from pathlib import Path
     p = Path(model_path)
+
+    if (p / "patch_manifest.json").exists():
+        return load_quantized_model_dir(
+            model_path,
+            config,
+            weight_map=weight_map,
+            verbose=verbose,
+        )
 
     if verbose:
         print(f"Loading weights from: {p}")

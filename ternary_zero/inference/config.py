@@ -171,6 +171,30 @@ def detect_config(model_path: str) -> ModelConfig:
 
     p = Path(model_path)
     config_path = p / "config.json"
+    manifest_path = p / "patch_manifest.json"
+
+    if not config_path.exists() and manifest_path.exists():
+        with open(manifest_path) as f:
+            manifest = json.load(f)
+        mc = manifest.get("model_config", {})
+        source_path = manifest.get("source_model_path", "")
+        name = manifest.get("model_name", str(p))
+        if source_path and Path(source_path).exists():
+            try:
+                return detect_config(source_path)
+            except Exception:
+                pass
+        if mc:
+            return ModelConfig(
+                name=name,
+                hidden_size=mc["hidden_size"],
+                intermediate_size=mc["intermediate_size"],
+                num_layers=mc.get("num_hidden_layers", mc.get("num_layers", 28)),
+                num_attention_heads=mc.get("num_attention_heads", 24),
+                num_key_value_heads=mc.get("num_key_value_heads", 8),
+                vocab_size=mc["vocab_size"],
+            )
+
     if not config_path.exists():
         raise FileNotFoundError(f"No config.json found at {config_path}")
 

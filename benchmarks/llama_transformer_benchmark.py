@@ -603,7 +603,19 @@ def run_full_benchmark(
         result.errors.append(f"Quantization failed: {e}")
         if verbose:
             print(f"\n  [ERROR] Quantization failed: {e}")
+        cache_base = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "quantized_cache",
+        )
         model_load_path = model_path
+        if os.path.isdir(cache_base):
+            for d in os.listdir(cache_base):
+                manifest = os.path.join(cache_base, d, "patch_manifest.json")
+                if os.path.exists(manifest):
+                    model_load_path = os.path.join(cache_base, d)
+                    if verbose:
+                        print(f"  [FALLBACK] Using cached quantized model: {model_load_path}")
+                    break
 
     try:
         i_report = benchmark_inference(

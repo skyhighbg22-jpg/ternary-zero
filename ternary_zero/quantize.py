@@ -13,6 +13,8 @@ def _as_numpy_array(value, dtype=None):
     if isinstance(value, Tensor):
         array = to_numpy(value.data)
     elif has_torch() and isinstance(value, torch.Tensor):
+        if value.dtype == torch.bfloat16:
+            value = value.to(torch.float32)
         array = value.detach().cpu().numpy()
     else:
         array = np.asarray(value)

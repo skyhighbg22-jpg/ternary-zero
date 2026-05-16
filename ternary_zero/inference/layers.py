@@ -280,6 +280,6 @@ class Transformer:
         elif self.lm_head_weight is not None:
             logits = np.dot(self.lm_head_weight, x).astype(np.float32)
         else:
-            logits = np.dot(self.embed_tokens.T, x).astype(np.float32)
+            logits = np.dot(self.embed_tokens, x).astype(np.float32)
 
         return logits

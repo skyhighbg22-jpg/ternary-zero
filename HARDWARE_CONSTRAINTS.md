@@ -421,18 +421,38 @@ __global__ void ternary_gemv_bias_rmsnorm_kernel(
 | Model Size | Params | Ternary Weights | Max Full-VRAM Context | Streaming Feasible? |
 |-----------|--------|----------------|----------------------|---------------------|
 | 1B | 1.0B | 250 MB | 131,072 tokens | Trivially yes |
-| 3B | 3.0B | 750 MB | 65,536 tokens | Trivially yes |
+| 3B | 3.6B | 860 MB | 42,395 tokens (measured) | Trivially yes |
 | 7B | 6.7B | 1.68 GB | 16,384 tokens | Yes, full VRAM |
 | 13B | 13.0B | 3.25 GB | 8,192 tokens | Yes, full VRAM |
 | 30B | 30.0B | 7.50 GB | 512 tokens | Tight, full VRAM |
 | 70B | 70.6B | 17.65 GB | N/A (streaming only) | **Yes, with streaming** |
 | 75B | 75.0B | 18.75 GB | N/A (streaming only) | **Yes, with streaming** |
 
+### 5.1 Measured Context Scaling: Llama-3.2-3B (2026-05-17)
+
+The context scaling analysis was executed as part of the transformer-scale benchmark
+(Phase 4). Results for Llama-3.2-3B at 7.5 GB VRAM budget:
+
+| Metric | Ternary-Zero | FP16 |
+|--------|-------------|------|
+| Weight memory | 860 MB | 6,879 MB |
+| Static overhead (embed + norm + runtime) | 2,863 MB | 8,883 MB |
+| KV bytes/token/layer | 4,096 | 4,096 |
+| Available for KV cache | 4,637 MB | 0 MB |
+| **Max context length** | **42,395 tokens** | **1 token** |
+| **Scaling ratio** | **42,395x** | baseline |
+
+**Key insight:** The FP16 model weights alone (6.88 GB) nearly exhaust the 7.5 GB
+VRAM budget, leaving zero room for KV cache. Ternary-Zero reduces weight memory to
+860 MB, freeing 6+ GB for context. This is the system's most compelling deployment
+advantage: **enabling long-context inference on consumer hardware that cannot even
+load the FP16 model.**
+
 ---
 
 ## 6. Recommendations
 
-1. **For models ≤ 30B:** Full in-VRAM execution is possible. Focus on kernel optimization (L2 pinning, fused ops).
+1. **For models ≤ 30B:** Full in-VRAM execution is possible. Focus on kernel optimization — the measured data shows kernel launch overhead (~25 us/launch) dominates over bandwidth. CUDA Graphs or persistent kernels are the highest-impact optimizations.
 
 2. **For 75B models:** Implement per-layer weight streaming as the primary execution strategy. Target ~1.5 tok/s on PCIe 4.0.
 
@@ -441,6 +461,8 @@ __global__ void ternary_gemv_bias_rmsnorm_kernel(
 4. **For production deployment:** Invest in NVLink or PCIe 5.0 hardware. A system with 64 GB+ system RAM and PCIe 5.0 (64 GB/s) would achieve ~3 tok/s for 75B ternary models.
 
 5. **KV-cache optimization:** At 75B scale, KV-cache dominates VRAM. Implement INT8 KV-cache quantization to double the maximum context length, or implement sliding-window attention to bound cache size.
+
+6. **Immediate priority:** The 2026-05-17 benchmarks show the kernel achieves 1.5x-3.3x speedup over cuBLAS FP16 but is limited by launch overhead. Fix this before pursuing bandwidth optimizations — the kernel is not yet bandwidth-limited (<3% utilization).
 
 ---
 

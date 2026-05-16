@@ -1,0 +1,20 @@
+{
+  "timestamp": "2026-05-17T01:13:12+0530",
+  "platform": "Windows 11 (AMD64)",
+  "gpu_name": "NVIDIA GeForce RTX 4060 Laptop GPU",
+  "cuda_version": "13.2, V13.2.78",
+  "python_version": "3.13.2",
+  "numpy_version": "2.4.5",
+  "errors": [
+    "Quantization failed: No weight files found at llama-3.2-3b",
+    "Inference failed: shapes (3072,128256) and (3072,) not aligned: 128256 (dim 1) != 3072 (dim 0)",
+    "Perplexity eval failed: shapes (3072,128256) and (3072,) not aligned: 128256 (dim 1) != 3072 (dim 0)"
+  ],
+  "context_scaling": {
+    "model_name": "Llama-3.2-3B",
+    "max_context_ternary": 42395,
+    "max_context_fp16": 1,
+    "scaling_ratio": 42395.0,
+    "vram_budget_mb": 7500.0
+  }
+}

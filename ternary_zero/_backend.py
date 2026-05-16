@@ -121,6 +121,8 @@ class autocast:
 
 def to_numpy(data) -> np.ndarray:
     if _HAS_TORCH and isinstance(data, torch.Tensor):
+        if data.dtype == torch.bfloat16:
+            data = data.to(torch.float32)
         return data.detach().cpu().numpy()
     if isinstance(data, np.ndarray):
         return data

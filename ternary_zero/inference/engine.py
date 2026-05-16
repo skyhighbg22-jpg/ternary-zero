@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
 import time
 import numpy as np
 from typing import Optional, List, Callable
@@ -56,9 +58,18 @@ class InferenceEngine:
         model = build_model(qm, force_cpu=force_cpu, verbose=verbose)
         del qm
 
+        tokenizer_source = model_path
+        manifest_path = Path(model_path) / "patch_manifest.json"
+        if manifest_path.exists():
+            try:
+                with open(manifest_path, "r", encoding="utf-8") as f:
+                    tokenizer_source = json.load(f).get("source_model_path", model_path)
+            except Exception:
+                tokenizer_source = model_path
+
         try:
-            tokenizer = Tokenizer.from_pretrained(model_path)
-        except ImportError:
+            tokenizer = Tokenizer.from_pretrained(tokenizer_source)
+        except Exception:
             tokenizer = Tokenizer.from_pretrained(config.name)
 
         return cls(model, tokenizer, config, max_seq_len=max_seq_len)

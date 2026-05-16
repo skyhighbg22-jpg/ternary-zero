@@ -155,7 +155,7 @@ Autograd engine with STE support, `nn` module system (Linear, BitLinear, Conv1d,
 
 | Model | Params | Ternary Weights | KV-Cache (S=2K) | Total VRAM | RTX 4060 (8GB) |
 |-------|--------|----------------|-----------------|------------|-----------------|
-| Llama-3.2-3B | 3.2B | 766 MB | 112 MB | ~1,200 MB | **Full VRAM** |
+| Llama-3.2-3B | 3.6B | 860 MB | 112 MB | ~1,300 MB | **Full VRAM** |
 | Llama-2-7B | 6.7B | 1,607 MB | 320 MB | ~2,200 MB | **Full VRAM** |
 | Llama-3-8B | 8.0B | 1,914 MB | 160 MB | ~2,400 MB | **Full VRAM** |
 | 13B | 13.0B | 3,250 MB | 400 MB | ~4,000 MB | **Full VRAM** |
@@ -319,7 +319,7 @@ ncu --set full --kernel-name "ternary_zero_gemv_kernel" \
     python benchmarks/undeniable_benchmark.py --model llama-3.2-3b
 ```
 
-### Measured Results (2026-05-09)
+### Measured Results (2026-05-17)
 
 microGPT (4,192 parameters) benchmarked across 6 implementations:
 
@@ -334,13 +334,59 @@ microGPT (4,192 parameters) benchmarked across 6 implementations:
 
 Weight memory: FP32 = 16,768 bytes; BitLinear = 1,060 bytes (16x compression).
 
-### VRAM Footprint Analysis (2026-05-13)
+### Llama-3.2-3B Ternary Quantization (2026-05-17)
 
-| Model | Total Params | FP16 Weight Mem | Ternary Weight Mem | Compression |
-|---|---|---|---|---|
-| Llama-3.2-3B | 3,212,739,072 | 6,128 MB | 766 MB | **8.0x** |
-| Llama-2-7B | 6,738,415,616 | 12,853 MB | 1,607 MB | **8.0x** |
-| Llama-3-8B | 8,030,261,248 | 15,316 MB | 1,914 MB | **8.0x** |
+Full 28-layer model quantized via streaming model patcher:
+
+| Metric | Value |
+|---|---|
+| Total parameters | 3,606,924,288 (3.61B) |
+| Original weight size | 12.85 GB |
+| Packed ternary weight size | 707.7 MB |
+| Compression vs FP32 | **18.2x** |
+| Compression vs FP16 | **9.1x** |
+| Mean sparsity | 0.0% |
+| Quantization time | 233.3s |
+
+### VRAM Footprint Analysis (2026-05-17)
+
+| Precision | Llama-3.2-3B Weight Mem | vs FP16 |
+|---|---|---|
+| FP32 | 13,758.67 MB | 0.5x |
+| **FP16** | **6,879.33 MB** | **1.0x** |
+| INT8 | 3,439.67 MB | 2.0x |
+| INT4 | 1,719.83 MB | 4.0x |
+| **Ternary-Zero (W2)** | **859.92 MB** | **8.0x** |
+
+### CUDA Kernel Baseline Comparison (M=1 Decode GEMV, 2026-05-17)
+
+Ternary-Zero vs cuBLAS FP16 vs INT4 Dequant on RTX 4060:
+
+| N | TZ (us) | FP16 (us) | INT4 (us) | TZ vs FP16 | TZ vs INT4 |
+|---|---|---|---|---|---|
+| 3072 | 18.65 | 43.13 | 17.04 | **2.31x** | 0.91x |
+| 8192 | 22.58 | 34.42 | 44.72 | **1.52x** | **1.98x** |
+| 4096 | 45.39 | 126.01 | 54.44 | **2.78x** | 1.20x |
+| 11008 | 52.65 | 116.75 | 54.64 | **2.22x** | 1.04x |
+| 14336 | 57.56 | 190.25 | 72.61 | **3.31x** | 1.26x |
+
+### Context Window Scaling (2026-05-17)
+
+| Metric | Ternary-Zero | FP16 |
+|---|---|---|
+| Max context @ 7.5 GB VRAM | **42,395 tokens** | 1 token |
+| Scaling ratio | **42,395x** | baseline |
+
+### Shape Matrix Benchmark (80-Point M x N Sweep, 2026-05-17)
+
+80/80 configurations completed. Key statistics:
+
+| Metric | Value |
+|---|---|
+| Latency range | 20.42 - 80.90 us |
+| Peak GFLOPS | 25.9 (M=128, N=16384) |
+| Peak bandwidth | 6.9 GB/s (M=128, N=16384) |
+| Success rate | 100% (80/80) |
 
 ---
 
@@ -358,12 +404,22 @@ Weight memory: FP32 = 16,768 bytes; BitLinear = 1,060 bytes (16x compression).
 - Rust PyO3 bindings for tensor operations and BitLinear forward pass
 - CUDA kernel source with PTX inline assembly and L2 persistence
 - microGPT benchmark suite (6-way comparison)
+- **Llama-3.2-3B full quantization pipeline (28 layers, 9.1x compression)**
+- **CUDA baseline comparison harness (Ternary-Zero vs cuBLAS FP16 vs INT4)**
+- **80-point shape matrix benchmark execution (80/80 configs measured)**
+- **Context window scaling analysis (42,395x vs FP16 at 7.5 GB VRAM)**
+
+**Requires CUDA GPU for completion:**
+- Transformer-scale inference throughput (tokens/sec, TTFT)
+- WikiText-2 perplexity evaluation (ternary vs FP16)
+- FP16 baseline profiling via HuggingFace transformers
+- End-to-end functional correctness validation (token generation)
 
 **In progress (see [ROADMAP.md](ROADMAP.md)):**
-- HuggingFace model patcher validation on Llama-3.2-3B
-- Automated 80-point shape matrix benchmark execution
-- Per-layer PCIe streaming validation on 70B models
-- Deep optimization: `cp.async`, PTX SIMD bitwise, KV-cache quantization
+- CUDA kernel optimization (current: 25-43 us M=1 GEMV; target: < 5 us)
+- Nsight Compute profiling for bottleneck identification
+- `cp.async` and PTX SIMD bitwise optimizations
+- Architectural portability (sm_70 through sm_90)
 
 ---
 

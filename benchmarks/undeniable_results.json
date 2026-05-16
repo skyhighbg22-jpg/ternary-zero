@@ -1,35 +1,35 @@
 {
   "model": "Llama-3.2-3B",
-  "total_params": 3212739072,
+  "total_params": 3606752256,
   "footprints": {
     "fp32": {
       "bytes_per_param": 4,
-      "weight_bytes": 12850956288,
-      "weight_mb": 12255.328125,
+      "weight_bytes": 14427009024,
+      "weight_mb": 13758.66796875,
       "compression_vs_fp16": 0.5
     },
     "fp16": {
       "bytes_per_param": 2,
-      "weight_bytes": 6425478144,
-      "weight_mb": 6127.6640625,
+      "weight_bytes": 7213504512,
+      "weight_mb": 6879.333984375,
       "compression_vs_fp16": 1.0
     },
     "int8": {
       "bytes_per_param": 1,
-      "weight_bytes": 3212739072,
-      "weight_mb": 3063.83203125,
+      "weight_bytes": 3606752256,
+      "weight_mb": 3439.6669921875,
       "compression_vs_fp16": 2.0
     },
     "int4": {
       "bytes_per_param": 0.5,
-      "weight_bytes": 1606369536,
-      "weight_mb": 1531.916015625,
+      "weight_bytes": 1803376128,
+      "weight_mb": 1719.83349609375,
       "compression_vs_fp16": 4.0
     },
     "ternary": {
       "bytes_per_param": 0.25,
-      "weight_bytes": 803184768,
-      "weight_mb": 765.9580078125,
+      "weight_bytes": 901688064,
+      "weight_mb": 859.916748046875,
       "compression_vs_fp16": 8.0
     }
   },
@@ -39,8 +39,8 @@
       "label": "Llama-3B hidden",
       "weight_bytes": 768,
       "total_bytes": 6914,
-      "memory_latency_us": 0.025426470588235294,
-      "projected_latency_us": 2.0254264705882354
+      "memory_latency_us": 0.025419117647058825,
+      "projected_latency_us": 2.0254191176470586
     },
     {
       "shape": "1x8192",
